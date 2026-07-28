@@ -1,0 +1,9 @@
+# Core runtime for GNS3 skill CLI
+httpx>=0.25.0
+pydantic>=2.0.0
+asyncssh>=2.14.0
+
+# Optional: tests
+#   pip install -e ".[dev]"
+# pytest>=7.0.0
+# pytest-asyncio>=0.21.0

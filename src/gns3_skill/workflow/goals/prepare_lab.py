@@ -1,0 +1,167 @@
+"""gns3_prepare_lab goal implementation."""
+
+from __future__ import annotations
+
+from typing import Any, Dict, Optional
+
+from gns3_skill.gns3_client import GNS3APIClient, GNS3Config
+from gns3_skill.server_lifecycle import ensure_gns3_server, normalize_server_url
+from gns3_skill.workflow.envelopes import (
+    STATUS_ERROR,
+    STATUS_SUCCESS,
+    STEP_CHANGED,
+    STEP_FAILED,
+    STEP_SKIPPED,
+    STEP_SUCCESS,
+    error_envelope,
+    goal_envelope,
+    step_entry,
+)
+from gns3_skill.workflow.resolve import ResolveMissing, resolve_or_missing_project
+from gns3_skill.workflow.runner import Step, run_steps
+
+
+async def prepare_lab_goal(
+    *,
+    project_name: Optional[str] = None,
+    project_id: Optional[str] = None,
+    create_if_missing: bool = True,
+    open_project: bool = True,
+    server_url: str = "http://localhost:3080",
+    username: Optional[str] = None,
+    password: Optional[str] = None,
+    force_ensure: bool = False,
+) -> Dict[str, Any]:
+    goal = "prepare_lab"
+    url = normalize_server_url(server_url)
+    ctx: Dict[str, Any] = {"client": None, "project": None}
+
+    async def ensure_step() -> Dict[str, Any]:
+        config = GNS3Config.from_env(
+            server_url=url, username=username, password=password
+        )
+        result = await ensure_gns3_server(
+            config.server_url,
+            username=config.username,
+            password=config.password,
+            force=force_ensure,
+        )
+        if result.get("status") != "success":
+            return step_entry(
+                "ensure_server",
+                STEP_FAILED,
+                detail=result,
+                error=result.get("error") or "GNS3 server not available",
+            )
+        ctx["client"] = GNS3APIClient(config)
+        status = STEP_CHANGED if result.get("started") else STEP_SUCCESS
+        return step_entry("ensure_server", status, detail={
+            "server_url": result.get("server_url") or url,
+            "already_running": result.get("already_running"),
+            "started": result.get("started"),
+        })
+
+    async def resolve_step() -> Dict[str, Any]:
+        client: GNS3APIClient = ctx["client"]
+        existing = await resolve_or_missing_project(
+            client, project_id=project_id, project_name=project_name
+        )
+        if existing is not None:
+            ctx["project"] = existing
+            return step_entry(
+                "resolve_project",
+                STEP_SKIPPED,
+                detail={
+                    "action": "reuse",
+                    "project_id": existing.get("project_id"),
+                    "name": existing.get("name"),
+                },
+            )
+        if project_id and not project_name:
+            return step_entry(
+                "resolve_project",
+                STEP_FAILED,
+                error=f"project_id not found: {project_id}",
+            )
+        if not create_if_missing:
+            return step_entry(
+                "resolve_project",
+                STEP_FAILED,
+                error="project missing and create_if_missing=false",
+            )
+        name = (project_name or "").strip()
+        if not name:
+            return step_entry(
+                "resolve_project",
+                STEP_FAILED,
+                error="project_name required to create project",
+            )
+        created = await client.create_project(name)
+        ctx["project"] = created
+        return step_entry(
+            "resolve_project",
+            STEP_CHANGED,
+            detail={
+                "action": "create",
+                "project_id": created.get("project_id"),
+                "name": created.get("name"),
+            },
+        )
+
+    async def open_step() -> Dict[str, Any]:
+        if not open_project:
+            return step_entry("open_project", STEP_SKIPPED, detail={"reason": "open_project=false"})
+        project = ctx.get("project") or {}
+        pid = project.get("project_id")
+        if not pid:
+            return step_entry("open_project", STEP_FAILED, error="no project to open")
+        if project.get("status") == "opened":
+            return step_entry(
+                "open_project",
+                STEP_SKIPPED,
+                detail={"project_id": pid, "already_open": True},
+            )
+        client: GNS3APIClient = ctx["client"]
+        opened = await client.open_project(pid)
+        ctx["project"] = opened if isinstance(opened, dict) else project
+        return step_entry(
+            "open_project",
+            STEP_CHANGED,
+            detail={"project_id": pid},
+        )
+
+    if not project_id and not (project_name and project_name.strip()):
+        return error_envelope(goal, "project_id or project_name is required")
+
+    result = await run_steps(
+        [
+            Step("ensure_server", ensure_step),
+            Step("resolve_project", resolve_step),
+            Step("open_project", open_step),
+        ]
+    )
+    project = ctx.get("project") or {}
+    if result.status == STATUS_SUCCESS:
+        return goal_envelope(
+            goal,
+            STATUS_SUCCESS,
+            result.steps,
+            result={
+                "project_id": project.get("project_id"),
+                "name": project.get("name"),
+                "project_status": project.get("status"),
+                "server_url": url,
+            },
+        )
+    return goal_envelope(
+        goal,
+        result.status,
+        result.steps,
+        error=result.error,
+        result={
+            "project_id": project.get("project_id"),
+            "name": project.get("name"),
+            "server_url": url,
+        },
+        next_hint="Fix ensure/server or project identity and retry",
+    )
