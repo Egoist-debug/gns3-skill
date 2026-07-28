@@ -1,4 +1,4 @@
-"""Per-playbook goal implementations (called from thin MCP tools)."""
+"""Per-playbook goal implementations (called from thin CLI goal tools)."""
 
 from .build_topology import build_topology_goal
 from .configure_devices import configure_devices_goal

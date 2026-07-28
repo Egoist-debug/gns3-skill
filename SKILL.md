@@ -21,10 +21,10 @@ python3 gns3-skill/scripts/gns3 gns3_list_nodes --json '{"project_id":"<id>"}'
 echo '{"project_name":"demo"}' | python3 gns3-skill/scripts/gns3 gns3_prepare_lab
 ```
 
-Prefer the project venv when available:
+Prefer a project venv when available:
 
 ```bash
-gns3-mcp-server/.venv/bin/python gns3-skill/scripts/gns3 <tool> ...
+gns3-skill/.venv/bin/python gns3-skill/scripts/gns3 <tool> ...
 # or after: pip install -e gns3-skill/
 gns3 <tool> ...
 ```

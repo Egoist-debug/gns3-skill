@@ -11,8 +11,8 @@ Secrets: set via environment. Document **names only**. Never commit real passwor
 - Deps: `httpx`, `pydantic`, `asyncssh`
 
 ```bash
-# from workspace root — reuse existing package venv or install skill editable
-gns3-mcp-server/.venv/bin/python -c "import httpx,asyncssh,pydantic; print('ok')"
+# from workspace root — install skill editable (or use a venv that has deps)
+python3 -m venv gns3-skill/.venv && gns3-skill/.venv/bin/pip install -e 'gns3-skill[dev]'
 # or
 pip install -e gns3-skill/
 ```
@@ -41,8 +41,8 @@ Confirmation tokens are process-local to the CLI process (not shared across rest
 
 ## Source layout
 
-`gns3-mcp-server/src/gns3_skill`. Do not fork the package.
-CLI lives at `gns3_skill.cli` (module path is historical; agent surface is the skill CLI).
+Source of truth: `gns3-skill/src/gns3_skill/` (standalone package; no FastMCP).
+CLI lives at `gns3_skill.cli` / `scripts/gns3`.
 
 ## Install skill (this monorepo layout)
 
@@ -52,7 +52,7 @@ Canonical skill monofolder:
 gns3-skill/
   SKILL.md
   scripts/gns3
-  src/gns3_skill/   # library package (symlink in monorepo)
+  src/gns3_skill/   # library package (source of truth)
   references/
 ```
 
@@ -74,7 +74,7 @@ readlink -f .agents/skills/gns3-skill
 ## CLI usage
 
 ```bash
-PY=gns3-mcp-server/.venv/bin/python   # or python3 after pip install -e gns3-skill/
+PY=gns3-skill/.venv/bin/python   # or python3 after pip install -e gns3-skill/
 
 $PY gns3-skill/scripts/gns3 list
 $PY gns3-skill/scripts/gns3 gns3_prepare_lab --project_name=demo

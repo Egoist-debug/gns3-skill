@@ -200,8 +200,8 @@ async def prepare_image_goal(
             "capability": "yellow",
             "action": "template densify / template CRUD",
             "message": (
-                "Template densify is not a green MCP path. Escape: name the missing "
-                "tool, get explicit user allow, then use minimum non-MCP REST if permitted."
+                "Template densify is not a green CLI path. Escape: name the missing "
+                "tool, get explicit user allow, then use minimum non-CLI REST if permitted."
             ),
         }
         return step_entry(

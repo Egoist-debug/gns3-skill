@@ -994,7 +994,7 @@ async def _send_console_commands_impl(
     login_password: Optional[str] = None,
     ready_timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
-    """Internal console command sender (not an MCP tool — safe to await)."""
+    """Internal console command sender (not a public CLI tool — safe to await)."""
     try:
         client = await create_client_ready(server_url, username, password)
 

@@ -1,4 +1,4 @@
-"""Goal-tool workflow infrastructure (internal; not MCP-decorated)."""
+"""Goal-tool workflow infrastructure (internal helpers for CLI goal tools)."""
 
 from .confirm import consume_token, issue_token, reset_tokens_for_tests
 from .envelopes import (
