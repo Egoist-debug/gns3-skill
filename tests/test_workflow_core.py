@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import os
+import tempfile
 import unittest
 from typing import Any, Dict, List
 from unittest.mock import AsyncMock, MagicMock
@@ -115,11 +117,27 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
 
 class ConfirmTests(unittest.TestCase):
     def setUp(self):
+        # Isolate the on-disk token store per test so file-backed persistence
+        # tests don't share ~/.cache state across tests or runs.
+        self._tmp = tempfile.NamedTemporaryFile(
+            prefix="gns3_confirm_test_", suffix=".json", delete=False
+        )
+        self._tmp.close()
+        os.chmod(self._tmp.name, 0o600)
+        self._prev_store = os.environ.get("GNS3_CONFIRM_TOKEN_STORE")
+        os.environ["GNS3_CONFIRM_TOKEN_STORE"] = self._tmp.name
         reset_tokens_for_tests()
 
     def tearDown(self):
         reset_tokens_for_tests()
-
+        try:
+            os.unlink(self._tmp.name)
+        except OSError:
+            pass
+        if self._prev_store is None:
+            os.environ.pop("GNS3_CONFIRM_TOKEN_STORE", None)
+        else:
+            os.environ["GNS3_CONFIRM_TOKEN_STORE"] = self._prev_store
     def test_issue_consume_once(self):
         target = {"project_id": "p1", "op": "restore"}
         token, exp = issue_token("restore", target, ttl_seconds=60)
@@ -156,6 +174,42 @@ class ConfirmTests(unittest.TestCase):
             target_hash({"b": 2, "a": 1}),
             target_hash({"a": 1, "b": 2}),
         )
+
+    def test_token_survives_across_process(self):
+        """Regression: a token issued in one CLI process must be consumable in
+        a later one — the documented cross-call confirm flow depends on it.
+        Simulates two CLI invocations by spawning a fresh interpreter."""
+        import json
+        import subprocess
+        import sys
+
+        target = {"project_id": "p1", "op": "restore"}
+        token, _ = issue_token("restore", target, ttl_seconds=60)
+
+        # New Python process: consume the token (different in-memory state).
+        consume_code = (
+            "import json, sys, os;\n"
+            "from gns3_skill.workflow.confirm import consume_token;\n"
+            "r = consume_token(sys.argv[1], 'restore', "
+            "{'project_id': 'p1', 'op': 'restore'});\n"
+            "sys.stdout.write(json.dumps(r));\n"
+        )
+        env = dict(os.environ)
+        env["GNS3_CONFIRM_TOKEN_STORE"] = self._tmp.name
+        env["PYTHONPATH"] = os.pathsep.join([p for p in sys.path if p])
+        out = subprocess.check_output(
+            [sys.executable, "-c", consume_code, token],
+            env=env,
+        )
+        self.assertEqual(json.loads(out), {"ok": True})
+
+        # The same token is now used — a third process must reject it.
+        out2 = subprocess.check_output(
+            [sys.executable, "-c", consume_code, token],
+            env=env,
+        )
+        self.assertFalse(json.loads(out2)["ok"])
+        self.assertIn("already used", json.loads(out2)["error"])
 
 
 class ResolvePureTests(unittest.IsolatedAsyncioTestCase):

@@ -35,9 +35,10 @@ pip install -e gns3-skill/
 | `GNS3_SSH_HOST_KEY_POLICY` | `accept_new` (default) / `strict` / `warn` |
 | `GNS3_SSH_CONNECT_TIMEOUT` | SSH connect readiness budget with retries (default `30`) |
 | `GNS3_CONFIRM_TOKEN_TTL_SECONDS` | One-time destructive goal token TTL (default `600`) |
+| `GNS3_CONFIRM_TOKEN_STORE` | Override path for the persisted confirm-token store (default: `$XDG_RUNTIME_DIR/gns3-skill/confirm-tokens.json`, fallback `~/.cache/gns3-skill/confirm-tokens.json`, mode 0600) |
 
 API `username`/`password` tool fields / `GNS3_USERNAME` / `GNS3_PASSWORD` are **not** guest console/SSH credentials — they authenticate the GNS3 **server** and, for a local install, are normally sourced automatically from `gns3_server.conf` (don’t set them for local servers). Guest SSH / console credentials are separate; see `GNS3_SSH_*` / `GNS3_CONSOLE_*` above.
-Confirmation tokens are process-local to the CLI process (not shared across restarts).
+Confirmation tokens (for destructive goal ops — `gns3_manage_snapshot` restore/delete, `gns3_finish_lab` with true flags) are **persisted to a local file** so a token issued in one CLI call’s `confirmation_required` preview survives into the follow-up execute call in a separate CLI process. The store is `gns3-skill/confirm-tokens.json` under `XDG_RUNTIME_DIR` (fallback `~/.cache`, mode 0600) and can be overridden with `GNS3_CONFIRM_TOKEN_STORE=<path>`. Tokens are single-use, action+target bound, and TTL-limited (`GNS3_CONFIRM_TOKEN_TTL_SECONDS`, default 600s). Don’t reuse a token after showing impact to the user — re-preview if the target or flags changed.
 
 ## Finding local server credentials
 
