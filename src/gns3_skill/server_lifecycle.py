@@ -109,7 +109,30 @@ async def probe_server(
                     return True, resp.json()
                 except Exception:
                     return True, {"raw": resp.text}
-            # Server is reachable but rejected the request (auth, etc.)
+            # Server is reachable but rejected the request (auth, etc.).
+            # Treat 401/403 as a credential problem, not healthy: the healthy cache
+            # must not store a 401 body, and the agent must be pointed at the real
+            # local credentials rather than loop retries. See references/setup.md
+            # "Finding local server credentials".
+            if resp.status_code in (401, 403):
+                creds_hint = (
+                    "GNS3 API authentication required (HTTP "
+                    f"{resp.status_code}). For a local GNS3 server the skill already "
+                    "reads [Server] user/password from the local gns3_server.conf "
+                    "(see references/setup.md \"Finding local server credentials\"; "
+                    "Linux: ~/.config/GNS3/2.2/gns3_server.conf under [Server]). This "
+                    "401 means that file is missing/unreadable, or its user/password "
+                    "is wrong: check the file once and retry the same call. For a "
+                    "remote server, pass --username / --password (or GNS3_USERNAME / "
+                    "GNS3_PASSWORD). Do not guess passwords."
+                )
+                return False, {
+                    "reachable": True,
+                    "http_status": resp.status_code,
+                    "detail": (resp.text or "")[:200],
+                    "error": creds_hint,
+                }
+            # Other non-200 from a reachable server (5xx, etc.).
             return True, {
                 "reachable": True,
                 "http_status": resp.status_code,
@@ -416,6 +439,18 @@ async def ensure_gns3_server(
     Returns a structured dict suitable for the ``gns3_ensure_server`` tool.
     """
     url = normalize_server_url(server_url)
+    # When credentials aren't passed explicitly, fall back to the local
+    # ``gns3_server.conf`` first (default), then ``GNS3_USERNAME`` /
+    # ``GNS3_PASSWORD`` env overrides. This makes `gns3_ensure_server`
+    # work out of the box for a normal local install with auth enabled — no
+    # env ritual, no guessing. See references/setup.md "Finding local server
+    # credentials". Reuses GNS3Config.from_env resolution order.
+    if username is None or password is None:
+        _resolved_cfg = GNS3Config.from_env(server_url=url, username=username, password=password)
+        if username is None:
+            username = _resolved_cfg.username
+        if password is None:
+            password = _resolved_cfg.password
     start_timeout = _start_timeout()
     t0 = time.monotonic()
 
@@ -461,6 +496,27 @@ async def ensure_gns3_server(
                 ),
             }
 
+        # If the server is already reachable but rejected auth (401/403), do not
+        # auto-start a second copy — point the caller at the real credentials.
+        if isinstance(payload, dict) and payload.get("reachable") and payload.get("http_status") in (401, 403):
+            return {
+                "status": "error",
+                "already_running": True,
+                "started": False,
+                "server_url": url,
+                "server_info": None,
+                "start_command": None,
+                "wait_seconds": round(time.monotonic() - t0, 3),
+                "error": payload.get("error") or (
+                    f"GNS3 API authentication required (HTTP {payload.get('http_status')}). "
+                    "For a local server the skill reads [Server] user/password from "
+                    "gns3_server.conf (see references/setup.md \"Finding local server "
+                    "credentials\"; Linux: ~/.config/GNS3/2.2/gns3_server.conf). "
+                    "For a remote server pass --username / --password "
+                    "(or GNS3_USERNAME / GNS3_PASSWORD). Do not guess passwords."
+                ),
+                "http_status": payload.get("http_status"),
+            }
         argv = build_start_command(url)
         start_cmd_str = " ".join(shlex.quote(a) for a in argv)
         pid, stderr_tail = await _spawn_server(argv)
@@ -490,6 +546,27 @@ async def ensure_gns3_server(
                     "server_info": payload,
                     "start_command": start_cmd_str,
                     "wait_seconds": round(time.monotonic() - t0, 3),
+                }
+            # Auth-rejected reachable server: fail fast instead of looping for
+            # start_timeout seconds on the same 401/403.
+            if isinstance(payload, dict) and payload.get("reachable") and payload.get("http_status") in (401, 403):
+                return {
+                    "status": "error",
+                    "already_running": True,
+                    "started": True,
+                    "server_url": url,
+                    "server_info": None,
+                    "start_command": start_cmd_str,
+                    "wait_seconds": round(time.monotonic() - t0, 3),
+                    "error": payload.get("error") or (
+                        f"GNS3 API authentication required (HTTP {payload.get('http_status')}). "
+                        "For a local server the skill reads [Server] user/password from "
+                        "gns3_server.conf (see references/setup.md \"Finding local server "
+                        "credentials\"; Linux: ~/.config/GNS3/2.2/gns3_server.conf). "
+                        "For a remote server pass --username / --password "
+                        "(or GNS3_USERNAME / GNS3_PASSWORD). Do not guess passwords."
+                    ),
+                    "http_status": payload.get("http_status"),
                 }
             last_err = payload
             await asyncio.sleep(0.5)

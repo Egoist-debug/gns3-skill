@@ -21,6 +21,18 @@ def _env_bool(name: str, default: bool = True) -> bool:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
 
+# Candidate locations for the GNS3 local server config. The first readable file
+# wins; we only ever read credentials + host/port from this — never write it,
+# never log its contents. See references/setup.md "Finding local server
+# credentials". Module-level (not a class attr) so pydantic v2 does not treat
+# it as a private model attribute.
+_GNS3_SERVER_CONF_CANDIDATES = (
+    "~/.config/GNS3/2.2/gns3_server.conf",                       # Linux
+    "~/Library/Application Support/GNS3/2.2/gns3_server.conf",    # macOS
+    "~/Documents/GNS3/embedded/gns3_server.conf",                 # bundled server / older Linux
+    "~/GNS3/gns3_server.conf",                                    # portable
+)
+
 
 class GNS3Config(BaseModel):
     """Configuration for GNS3 server connection."""
@@ -29,6 +41,66 @@ class GNS3Config(BaseModel):
     password: Optional[str] = Field(default=None, description="Password for authentication")
     verify_ssl: bool = Field(default=True, description="Verify SSL certificates")
     timeout: float = Field(default=30.0, description="Request timeout in seconds")
+
+    @staticmethod
+    def _resolve_conf_path() -> Optional[Path]:
+        """Return the first existing, readable ``gns3_server.conf`` candidate, else None."""
+        for raw in _GNS3_SERVER_CONF_CANDIDATES:
+            p = Path(raw).expanduser()
+            try:
+                if p.is_file():
+                    return p
+            except OSError:
+                continue
+        # Windows: %APPDATA%\GNS3\2.2\gns3_server.conf (resolved per-user)
+        appdata = os.environ.get("APPDATA")
+        if appdata:
+            p = Path(appdata) / "GNS3" / "2.2" / "gns3_server.conf"
+            try:
+                if p.is_file():
+                    return p
+            except OSError:
+                pass
+        return None
+
+    @staticmethod
+    def _read_local_server_conf(path: Path) -> Dict[str, Optional[str]]:
+        """Parse the ``[Server]`` section of a local ``gns3_server.conf``.
+
+        Returns a dict with keys ``auth``, ``user``, ``password``, ``host``,
+        ``port`` (values None when absent / unparseable). Never raises — a
+        malformed/missing file simply yields no credentials, and the caller
+        surfaces a normal 401 error rather than a parse traceback.
+        """
+        import configparser
+
+        out: Dict[str, Optional[str]] = {k: None for k in ("auth", "user", "password", "host", "port")}
+        try:
+            cp = configparser.ConfigParser(strict=False, interpolation=None)
+            if not cp.read(str(path)):
+                return out
+            if not cp.has_section("Server"):
+                return out
+            for key in out:
+                if cp.has_option("Server", key):
+                    out[key] = (cp.get("Server", key) or "").strip() or None
+        except Exception:
+            return out
+        return out
+
+    @classmethod
+    def from_local_server_conf(cls) -> Dict[str, Optional[str]]:
+        """Read the local ``gns3_server.conf`` ``[Server]`` section as a flat dict.
+
+        Always returns a dict (possibly all-None). Used as the **default**
+        credential source for local GNS3 servers so the skill works out of the
+        box when the user installed GNS3 normally, with no env ritual. See
+        ``references/setup.md`` ("Finding local server credentials").
+        """
+        path = cls._resolve_conf_path()
+        if path is None:
+            return {k: None for k in ("auth", "user", "password", "host", "port")}
+        return cls._read_local_server_conf(path)
 
     @classmethod
     def from_env(
@@ -39,15 +111,46 @@ class GNS3Config(BaseModel):
         verify_ssl: Optional[bool] = None,
         timeout: Optional[float] = None,
     ) -> "GNS3Config":
-        """Build config from explicit args with environment-variable fallbacks.
+        """Build config from explicit args with **local-config-file first** defaults.
 
-        Environment variables:
-          GNS3_SERVER_URL, GNS3_USERNAME, GNS3_PASSWORD, GNS3_VERIFY_SSL, GNS3_TIMEOUT
+        Resolution order for credentials (highest-precedence first):
+          1. Explicit ``username`` / ``password`` kwargs.
+          2. ``GNS3_USERNAME`` / ``GNS3_PASSWORD`` environment overrides.
+          3. ``[Server]`` section of the local ``gns3_server.conf``
+             (``~/.config/GNS3/2.2/gns3_server.conf`` etc.) — the default the
+             skill loads without any env setup. Only attempted when missing.
+
+        ``server_url`` falls back to the same config file's ``host`` / ``port``
+        when not provided via arg or env. Environment variables:
+          ``GNS3_SERVER_URL``, ``GNS3_USERNAME``, ``GNS3_PASSWORD``,
+          ``GNS3_VERIFY_SSL``, ``GNS3_TIMEOUT``.
         """
+        local = cls.from_local_server_conf()
+        # Server URL: explicit > env > local conf host:port > default.
+        if server_url is None or str(server_url).strip() == "":
+            if os.environ.get("GNS3_SERVER_URL"):
+                server_url = os.environ.get("GNS3_SERVER_URL")
+            elif local.get("host"):
+                port = local.get("port") or "3080"
+                server_url = f"http://{local['host']}:{port}"
+            else:
+                server_url = "http://localhost:3080"
+        # Credentials: explicit > env > local conf (only when auth=True).
+        if username is None and password is None:
+            env_u = os.environ.get("GNS3_USERNAME")
+            env_p = os.environ.get("GNS3_PASSWORD")
+            if env_u and env_p:
+                username, password = env_u, env_p
+            elif str(local.get("auth", "")).lower() == "true" and (local.get("user") or local.get("password")):
+                username, password = local.get("user"), local.get("password")
+            elif env_u:
+                username = env_u
+            elif env_p:
+                password = env_p
         return cls(
-            server_url=server_url or os.environ.get("GNS3_SERVER_URL") or "http://localhost:3080",
-            username=username if username is not None else os.environ.get("GNS3_USERNAME"),
-            password=password if password is not None else os.environ.get("GNS3_PASSWORD"),
+            server_url=server_url,
+            username=username,
+            password=password,
             verify_ssl=_env_bool("GNS3_VERIFY_SSL", True) if verify_ssl is None else verify_ssl,
             timeout=float(os.environ["GNS3_TIMEOUT"]) if timeout is None and os.environ.get("GNS3_TIMEOUT") else (timeout if timeout is not None else 30.0),
         )

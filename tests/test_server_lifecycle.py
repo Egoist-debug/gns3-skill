@@ -122,19 +122,41 @@ class EnsureServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result["already_running"])
             spawn.assert_awaited_once()
 
-    async def test_http_401_counts_as_reachable(self):
+    async def test_http_401_is_auth_error_not_healthy(self):
+        # Pre-2.1 behavior: a reachable server returning 401 was cached as
+        # "success" with a 401 body, causing agents to loop retries with no
+        # password hint. The new contract: 401/403 from probe_server is an
+        # auth error (ok=False), and ensure_gns3_server surfaces a credential
+        # hint instead of starting / caching. See references/setup.md
+        # "Finding local server credentials".
         with patch(
             "gns3_skill.server_lifecycle.probe_server",
             new=AsyncMock(
-                return_value=(True, {"reachable": True, "http_status": 401, "detail": ""})
+                return_value=(False, {
+                    "reachable": True,
+                    "http_status": 401,
+                    "detail": "",
+                    "error": (
+                        "GNS3 API authentication required (HTTP 401). Set "
+                        "GNS3_USERNAME / GNS3_PASSWORD from the local server "
+                        "config before retrying — see references/setup.md "
+                        "\"Finding local server credentials\" (Linux: "
+                        "~/.config/GNS3/2.2/gns3_server.conf under [Server]). "
+                        "Do not guess passwords."
+                    ),
+                })
             ),
         ), patch(
             "gns3_skill.server_lifecycle._spawn_server",
             new=AsyncMock(),
         ) as spawn:
             result = await ensure_gns3_server("http://127.0.0.1:3080", force=True)
-            self.assertEqual(result["status"], "success")
+            self.assertEqual(result["status"], "error")
             self.assertTrue(result["already_running"])
+            self.assertEqual(result.get("http_status"), 401)
+            self.assertIn("GNS3_USERNAME", result["error"])
+            self.assertIn("GNS3_PASSWORD", result["error"])
+            self.assertIn("gns3_server.conf", result["error"])
             spawn.assert_not_called()
 
 

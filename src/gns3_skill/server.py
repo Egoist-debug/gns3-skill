@@ -33,7 +33,9 @@ def create_client(
 ) -> GNS3APIClient:
     """Create a GNS3 API client.
 
-    Explicit args win; otherwise fall back to GNS3_* environment variables.
+    Explicit args win; otherwise fall back to GNS3_* env, then to the local
+    ``gns3_server.conf`` ``[Server]`` section (for local GNS3 installs with
+    auth enabled). See GNS3Config.from_env resolution order.
     """
     config = GNS3Config.from_env(
         server_url=server_url,
