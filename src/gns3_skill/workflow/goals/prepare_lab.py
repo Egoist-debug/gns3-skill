@@ -115,19 +115,25 @@ async def prepare_lab_goal(
         pid = project.get("project_id")
         if not pid:
             return step_entry("open_project", STEP_FAILED, error="no project to open")
-        if project.get("status") == "opened":
+        client: GNS3APIClient = ctx["client"]
+        # Always open explicitly — even if the cached project status says "opened",
+        # the GNS3 server may have restarted, losing all open states.  An open
+        # call on an already-opened project is a cheap no-op, so we always do it.
+        opened = await client.open_project(pid)
+        if isinstance(opened, dict) and opened.get("status") == "opened":
+            ctx["project"] = opened
             return step_entry(
                 "open_project",
-                STEP_SKIPPED,
-                detail={"project_id": pid, "already_open": True},
+                STEP_CHANGED,
+                detail={"project_id": pid},
             )
-        client: GNS3APIClient = ctx["client"]
-        opened = await client.open_project(pid)
+        # open_project may return the project dict or raise; if we get here
+        # the project is open but we may not have a clean status.
         ctx["project"] = opened if isinstance(opened, dict) else project
         return step_entry(
             "open_project",
             STEP_CHANGED,
-            detail={"project_id": pid},
+            detail={"project_id": pid, "note": "open issued but status unclear"},
         )
 
     if not project_id and not (project_name and project_name.strip()):

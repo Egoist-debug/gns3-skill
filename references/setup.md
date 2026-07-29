@@ -165,6 +165,18 @@ $PY gns3-skill/scripts/gns3 list | tail -5          # expect Total: 58
 $PY gns3-skill/scripts/gns3 gns3_list_projects      # real project list or ensure+list
 ```
 
+## Device default credentials
+
+Common GNS3 appliance defaults for console login (pass via `--login_username` / `--login_password` to `gns3_send_console_commands`):
+
+| Appliance | Username | Password | Notes |
+|-----------|----------|----------|-------|
+| SONiC VS | `admin` | `YourPaSsWoRd` | Default for the official SONiC VS qcow2 image |
+| Cisco IOS | — | — | No login by default; optional `enable` secret |
+| Cisco IOSv | — | — | Same as IOS |
+
+When in doubt, consult the appliance documentation. Do not guess passwords.
+
 ## Skill core
 
 - Rules: `../SKILL.md`

@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Thin monofolder wrapper → gns3_skill.cli."""
+"""Thin monofolder wrapper → gns3_skill.cli.
+
+If the current interpreter is not the project venv, auto re-exec into it
+so that deps like httpx are available. This makes the documented
+``python3 scripts/gns3`` one-liner actually work on a default system python.
+"""
 from __future__ import annotations
 
 import os
@@ -7,7 +12,13 @@ import sys
 from pathlib import Path
 
 _SKILL_ROOT = Path(__file__).resolve().parents[1]
+_VENV_PYTHON = _SKILL_ROOT / ".venv" / "bin" / "python"
 _src = _SKILL_ROOT / "src"
+
+# Auto re-exec into the project venv if we're not already inside it.
+if _VENV_PYTHON.is_file() and not sys.prefix.startswith(str(_SKILL_ROOT / ".venv")):
+    os.execv(str(_VENV_PYTHON), [str(_VENV_PYTHON), *sys.argv])
+
 if (_src / "gns3_skill").exists() and str(_src) not in sys.path:
     sys.path.insert(0, str(_src))
 

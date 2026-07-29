@@ -515,8 +515,32 @@ async def ensure_gns3_server(
                     "For a remote server pass --username / --password "
                     "(or GNS3_USERNAME / GNS3_PASSWORD). Do not guess passwords."
                 ),
-                "http_status": payload.get("http_status"),
             }
+
+        # Before spawning, check if something is already listening on the port.
+        # This guards against the case where the server is up but auth failed,
+        # or the probe hit a transient connection error.
+        _, port = _parse_host_port(url)
+        existing_pids = _pids_listening_on_port(port)
+        if existing_pids:
+            # Server is running but probe failed — likely auth or transient.
+            return {
+                "status": "error",
+                "already_running": True,
+                "started": False,
+                "server_url": url,
+                "server_info": None,
+                "start_command": None,
+                "wait_seconds": round(time.monotonic() - t0, 3),
+                "error": (
+                    f"GNS3 server is already running (pid {existing_pids[0]}) on port {port} "
+                    f"but the health probe failed ({payload}). "
+                    "If auth is enabled, ensure credentials are correct "
+                    "(see references/setup.md 'Finding local server credentials'). "
+                    "Use --force=true to bypass cache and re-probe."
+                ),
+            }
+
         argv = build_start_command(url)
         start_cmd_str = " ".join(shlex.quote(a) for a in argv)
         pid, stderr_tail = await _spawn_server(argv)

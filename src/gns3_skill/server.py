@@ -983,8 +983,8 @@ async def gns3_get_topology(
 
 async def gns3_send_console_commands(
     project_id: str,
-    node_id: str,
-    commands: List[str],
+    node_id: str = "",
+    commands: List[str] = [],
     server_url: str = "http://localhost:3080",
     username: Optional[str] = None,
     password: Optional[str] = None,
@@ -996,11 +996,15 @@ async def gns3_send_console_commands(
     login_username: Optional[str] = None,
     login_password: Optional[str] = None,
     ready_timeout: Optional[float] = None,
+    node_name: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
     Send commands to a node's console via Telnet.
 
     Args:
+        project_id: GNS3 project ID
+        node_id: GNS3 node ID (preferred; resolves instantly). Empty string triggers name resolution.
+        node_name: Node name — resolved to node_id via list_nodes when node_id is not given
         commands: List of commands to execute
         wait_for_boot: Wait for device boot before sending commands
         boot_timeout: Maximum time to wait for boot (seconds)
@@ -1012,6 +1016,27 @@ async def gns3_send_console_commands(
         ready_timeout: Post-connect login readiness budget seconds
             (default 30 / GNS3_CONSOLE_READY_TIMEOUT)
     """
+    # Resolve node_name → node_id when node_id is not given
+    if not node_id and node_name:
+        try:
+            client = await create_client_ready(server_url, username, password)
+            node = await get_node_by_name(client, project_id, node_name)
+            if not node:
+                return {
+                    "status": "error",
+                    "error": f"Node '{node_name}' not found in project {project_id}",
+                }
+            node_id = node.get("node_id")
+            if not node_id:
+                return {
+                    "status": "error",
+                    "error": f"Node '{node_name}' has no node_id",
+                }
+        except Exception as e:
+            return {"status": "error", "error": f"Failed to resolve node_name '{node_name}': {e}"}
+    elif not node_id:
+        return {"status": "error", "error": "node_id or node_name is required"}
+
     return await _send_console_commands_impl(
         project_id=project_id,
         node_id=node_id,

@@ -84,6 +84,9 @@ async def send_console_commands_impl(
                     accept_login_prompts=need_login,
                 ):
                     return {"status": "error", "error": "Timeout waiting for device boot"}
+                # Discard any residual output from boot phase (login prompts,
+                # banner text) so it doesn't pollute the first command response.
+                telnet._rx_buf = ""
 
             authenticated = False
             if need_login:
@@ -94,6 +97,15 @@ async def send_console_commands_impl(
                 ):
                     return {"status": "error", "error": "Console authentication failed"}
                 authenticated = True
+                # Discard any residual output from login phase (banner text,
+                # stale command echoes) so it doesn't pollute the first
+                # command response.
+                telnet._rx_buf = ""
+            else:
+                # Even without login, drain any stale output from the console
+                # buffer (cross-call pollution — a previous session may have
+                # left data in the device's console output buffer).
+                telnet._drain_idle_prompts()
 
             def _result_entry(cmd: str, output: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
                 entry: Dict[str, Any] = {"command": cmd, "response": output}
