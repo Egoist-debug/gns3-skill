@@ -7,11 +7,12 @@ Provides robust telnet connection to network device consoles.
 from __future__ import annotations
 
 import logging
-import os
 import re
 import socket
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+from ._env import env_float, env_int
 
 logger = logging.getLogger(__name__)
 
@@ -54,32 +55,14 @@ _SHELL_ENDINGS = (">", "#", "$", "%")
 _IAC = 255
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
-
-
-def _env_int(name: str, default: int) -> int:
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        return int(raw)
-    except ValueError:
-        return default
 
 
 def default_ready_timeout() -> float:
-    return _env_float("GNS3_CONSOLE_READY_TIMEOUT", DEFAULT_READY_TIMEOUT)
+    return env_float("GNS3_CONSOLE_READY_TIMEOUT", DEFAULT_READY_TIMEOUT)
 
 
 def default_max_response_bytes() -> int:
-    return max(1024, _env_int("GNS3_CONSOLE_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES))
+    return max(1024, env_int("GNS3_CONSOLE_MAX_RESPONSE_BYTES", DEFAULT_MAX_RESPONSE_BYTES))
 
 
 def strip_ansi(text: str) -> str:

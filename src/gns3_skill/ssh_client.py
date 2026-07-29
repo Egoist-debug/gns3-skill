@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import asyncio
 import logging
-import os
 import re
 import time
 from typing import Any, Dict, List, Optional, Tuple
+
+from ._env import env_float
 
 import asyncssh
 
@@ -56,19 +58,11 @@ def resolve_host_key_policy(policy: Optional[str] = None) -> str:
 DEFAULT_CONNECT_TIMEOUT = 30.0
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
 
 
 def default_connect_timeout() -> float:
     """Total SSH connect readiness budget in seconds."""
-    return _env_float("GNS3_SSH_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT)
+    return env_float("GNS3_SSH_CONNECT_TIMEOUT", DEFAULT_CONNECT_TIMEOUT)
 
 
 def _is_transient_ssh_error(exc: BaseException) -> bool:

@@ -4,7 +4,7 @@ Configuration Templates for Common Network Scenarios
 Pre-built configurations for routers, switches, and other devices.
 """
 
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 
 class ConfigTemplates:
@@ -138,7 +138,7 @@ class ConfigTemplates:
     @staticmethod
     def dhcp_pool_config(pool_name: str, network: str, mask: str,
                         default_router: str, dns_servers: Optional[List[str]] = None,
-                        excluded_addresses: Optional[List[tuple]] = None) -> List[str]:
+                        excluded_addresses: Optional[List[Tuple[str, str]]] = None) -> List[str]:
         """Configure DHCP pool."""
         config = []
         
@@ -325,7 +325,7 @@ class TopologyTemplates:
     """Pre-defined topology templates."""
     
     @staticmethod
-    def simple_lan() -> Dict[str, any]:
+    def simple_lan() -> Dict[str, Any]:
         """Simple LAN topology: Router + Switch + 2 PCs."""
         return {
             "name": "Simple LAN",
@@ -344,7 +344,7 @@ class TopologyTemplates:
         }
     
     @staticmethod
-    def dual_router_topology() -> Dict[str, any]:
+    def dual_router_topology() -> Dict[str, Any]:
         """Two routers connected with PCs on each side."""
         return {
             "name": "Dual Router",
@@ -371,7 +371,7 @@ class TopologyTemplates:
         }
     
     @staticmethod
-    def hub_and_spoke() -> Dict[str, any]:
+    def hub_and_spoke() -> Dict[str, Any]:
         """Hub and spoke topology with central router."""
         return {
             "name": "Hub and Spoke",

@@ -13,6 +13,8 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 from urllib.parse import urlparse
 
+from ._env import env_float
+
 import httpx
 
 from .gns3_client import GNS3Config, _env_bool
@@ -32,14 +34,6 @@ _lock = asyncio.Lock()
 _healthy_cache: Dict[str, Tuple[float, Any]] = {}
 
 
-def _env_float(name: str, default: float) -> float:
-    raw = os.environ.get(name)
-    if raw is None or not str(raw).strip():
-        return default
-    try:
-        return float(raw)
-    except ValueError:
-        return default
 
 
 def normalize_server_url(server_url: Optional[str]) -> str:
@@ -126,11 +120,11 @@ async def probe_server(
 
 
 def _cache_ttl() -> float:
-    return _env_float("GNS3_SERVER_HEALTHY_CACHE_SECONDS", DEFAULT_HEALTHY_CACHE_SECONDS)
+    return env_float("GNS3_SERVER_HEALTHY_CACHE_SECONDS", DEFAULT_HEALTHY_CACHE_SECONDS)
 
 
 def _start_timeout() -> float:
-    return _env_float("GNS3_SERVER_START_TIMEOUT", DEFAULT_START_TIMEOUT)
+    return env_float("GNS3_SERVER_START_TIMEOUT", DEFAULT_START_TIMEOUT)
 
 
 def _cache_get(server_url: str) -> Optional[Any]:
@@ -158,7 +152,7 @@ def clear_healthy_cache(server_url: Optional[str] = None) -> None:
 
 
 def _stop_timeout() -> float:
-    return _env_float("GNS3_SERVER_STOP_TIMEOUT", DEFAULT_STOP_TIMEOUT)
+    return env_float("GNS3_SERVER_STOP_TIMEOUT", DEFAULT_STOP_TIMEOUT)
 
 
 def _pid_alive(pid: int) -> bool:

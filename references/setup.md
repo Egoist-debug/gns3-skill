@@ -41,7 +41,7 @@ Confirmation tokens are process-local to the CLI process (not shared across rest
 
 ## Source layout
 
-Source of truth: `gns3-skill/src/gns3_skill/` (standalone package; no FastMCP).
+Source of truth: `gns3-skill/src/gns3_skill/` — standalone async Python package dispatched via CLI.
 CLI lives at `gns3_skill.cli` / `scripts/gns3`.
 
 ## Install skill (this monorepo layout)

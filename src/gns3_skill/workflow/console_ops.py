@@ -25,9 +25,9 @@ async def send_console_commands(
     ready_timeout: Optional[float] = None,
 ) -> Dict[str, Any]:
     """Delegate to server private impl — pure-body responses included."""
-    from gns3_skill.server import _send_console_commands_impl
+    from gns3_skill.console_core import send_console_commands_impl
 
-    return await _send_console_commands_impl(
+    return await send_console_commands_impl(
         project_id=project_id,
         node_id=node_id,
         commands=commands,

@@ -12,8 +12,8 @@ import sys
 from typing import Any, Dict, List, Optional
 
 from .gns3_client import GNS3APIClient, GNS3Config
-from .telnet_client import TelnetClient
 from .config_templates import ConfigTemplates, TopologyTemplates
+from .console_core import send_console_commands_impl as _send_console_commands_impl
 from .server_lifecycle import ensure_gns3_server, normalize_server_url, stop_gns3_server
 from . import ssh_client as ssh_helpers
 from .workflow.topology import validate_topology_snapshot
@@ -978,112 +978,6 @@ async def gns3_get_topology(
 
 # ==================== CONSOLE & CONFIGURATION TOOLS ====================
 
-async def _send_console_commands_impl(
-    project_id: str,
-    node_id: str,
-    commands: List[str],
-    server_url: str = "http://localhost:3080",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
-    wait_for_boot: bool = True,
-    boot_timeout: int = 120,
-    enter_config_mode: bool = False,
-    save_config: bool = False,
-    enable_password: Optional[str] = None,
-    login_username: Optional[str] = None,
-    login_password: Optional[str] = None,
-    ready_timeout: Optional[float] = None,
-) -> Dict[str, Any]:
-    """Internal console command sender (not a public CLI tool — safe to await)."""
-    try:
-        client = await create_client_ready(server_url, username, password)
-
-        console_info = await client.get_node_console_info(project_id, node_id)
-        host = console_info.get("host")
-        port = console_info.get("port")
-
-        if not host or not port:
-            return {
-                "status": "error",
-                "error": "Node has no console or is not running; start it with gns3_start_node first",
-            }
-
-        # Resolve console login credentials (args > env). Never log secrets.
-        resolved_login_user, resolved_login_pass = ssh_helpers.resolve_console_credentials(
-            login_username, login_password
-        )
-        need_login = resolved_login_user is not None or resolved_login_pass is not None
-
-        telnet = TelnetClient(host, port, timeout=30.0)
-        if not telnet.connect():
-            return {"status": "error", "error": f"Failed to connect to console {host}:{port}"}
-
-        try:
-            if wait_for_boot:
-                if not telnet.wait_for_boot(
-                    timeout=boot_timeout,
-                    accept_login_prompts=need_login,
-                ):
-                    return {"status": "error", "error": "Timeout waiting for device boot"}
-
-            authenticated = False
-            if need_login:
-                if not telnet.login(
-                    resolved_login_user,
-                    resolved_login_pass,
-                    ready_timeout=ready_timeout,
-                ):
-                    return {"status": "error", "error": "Console authentication failed"}
-                authenticated = True
-
-            def _result_entry(cmd: str, output: str, meta: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
-                entry: Dict[str, Any] = {"command": cmd, "response": output}
-                if meta and meta.get("truncated"):
-                    entry["truncated"] = True
-                    entry["response_bytes"] = meta.get("response_bytes")
-                    entry["response_bytes_raw"] = meta.get("response_bytes_raw")
-                if meta and "completed" in meta:
-                    entry["completed"] = bool(meta["completed"])
-                return entry
-
-            if enter_config_mode:
-                outputs, metas = telnet.send_config_commands(
-                    commands,
-                    enter_config=True,
-                    save_config=save_config,
-                    enable_password=enable_password,
-                    return_meta=True,
-                )
-                results = [
-                    _result_entry(cmd, output, meta)
-                    for cmd, output, meta in zip(commands, outputs, metas)
-                ]
-            else:
-                results = []
-                prompts = [">", "#", "$", "%"]
-                for cmd in commands:
-                    output, meta = telnet.send_cmd(
-                        cmd, wait_for=prompts, wait_time=1.0, return_meta=True
-                    )
-                    results.append(_result_entry(cmd, output, meta))
-
-            payload: Dict[str, Any] = {
-                "status": "success",
-                "node_name": console_info.get("name"),
-                "results": results,
-            }
-            if need_login:
-                payload["authenticated"] = authenticated
-                if resolved_login_user:
-                    payload["login_username"] = resolved_login_user
-            return payload
-        finally:
-            telnet.close()
-
-    except Exception as e:
-        logger.error(f"Failed to send console commands: {e}")
-        return {"status": "error", "error": str(e)}
-
 
 async def gns3_send_console_commands(
     project_id: str,
@@ -1985,22 +1879,18 @@ async def gns3_prepare_lab(
 
     Preferred entry for bootstrap lab / project playbook.
     """
-    try:
-        from .workflow.goals.prepare_lab import prepare_lab_goal
+    from .workflow.goals.prepare_lab import prepare_lab_goal
 
-        return await prepare_lab_goal(
-            project_name=project_name,
-            project_id=project_id,
-            create_if_missing=create_if_missing,
-            open_project=open_project,
-            server_url=server_url,
-            username=username,
-            password=password,
-            force_ensure=force_ensure,
-        )
-    except Exception as e:
-        logger.error(f"gns3_prepare_lab failed: {e}")
-        return {"status": "error", "goal": "prepare_lab", "error": str(e), "steps": []}
+    return await prepare_lab_goal(
+        project_name=project_name,
+        project_id=project_id,
+        create_if_missing=create_if_missing,
+        open_project=open_project,
+        server_url=server_url,
+        username=username,
+        password=password,
+        force_ensure=force_ensure,
+    )
 
 
 async def gns3_build_topology(
@@ -2018,23 +1908,19 @@ async def gns3_build_topology(
 
     Preferred entry for build topology playbook.
     """
-    try:
-        from .workflow.goals.build_topology import build_topology_goal
+    from .workflow.goals.build_topology import build_topology_goal
 
-        return await build_topology_goal(
-            project_name=project_name,
-            project_id=project_id,
-            nodes=nodes,
-            links=links,
-            start=start,
-            validate=validate,
-            server_url=server_url,
-            username=username,
-            password=password,
-        )
-    except Exception as e:
-        logger.error(f"gns3_build_topology failed: {e}")
-        return {"status": "error", "goal": "build_topology", "error": str(e), "steps": []}
+    return await build_topology_goal(
+        project_name=project_name,
+        project_id=project_id,
+        nodes=nodes,
+        links=links,
+        start=start,
+        validate=validate,
+        server_url=server_url,
+        username=username,
+        password=password,
+    )
 
 
 async def gns3_configure_devices(
@@ -2049,20 +1935,16 @@ async def gns3_configure_devices(
 
     Preferred entry for configure devices playbook. Fail-stop across targets.
     """
-    try:
-        from .workflow.goals.configure_devices import configure_devices_goal
+    from .workflow.goals.configure_devices import configure_devices_goal
 
-        return await configure_devices_goal(
-            project_name=project_name,
-            project_id=project_id,
-            targets=targets,
-            server_url=server_url,
-            username=username,
-            password=password,
-        )
-    except Exception as e:
-        logger.error(f"gns3_configure_devices failed: {e}")
-        return {"status": "error", "goal": "configure_devices", "error": str(e), "steps": []}
+    return await configure_devices_goal(
+        project_name=project_name,
+        project_id=project_id,
+        targets=targets,
+        server_url=server_url,
+        username=username,
+        password=password,
+    )
 
 
 async def gns3_diagnose_connectivity(
@@ -2078,26 +1960,17 @@ async def gns3_diagnose_connectivity(
 
     Preferred entry for diagnose connectivity playbook. No automatic remediation.
     """
-    try:
-        from .workflow.goals.diagnose_connectivity import diagnose_connectivity_goal
+    from .workflow.goals.diagnose_connectivity import diagnose_connectivity_goal
 
-        return await diagnose_connectivity_goal(
-            project_name=project_name,
-            project_id=project_id,
-            suspect_nodes=suspect_nodes,
-            probe_commands=probe_commands,
-            server_url=server_url,
-            username=username,
-            password=password,
-        )
-    except Exception as e:
-        logger.error(f"gns3_diagnose_connectivity failed: {e}")
-        return {
-            "status": "error",
-            "goal": "diagnose_connectivity",
-            "error": str(e),
-            "steps": [],
-        }
+    return await diagnose_connectivity_goal(
+        project_name=project_name,
+        project_id=project_id,
+        suspect_nodes=suspect_nodes,
+        probe_commands=probe_commands,
+        server_url=server_url,
+        username=username,
+        password=password,
+    )
 
 
 async def gns3_run_guest_commands(
@@ -2121,34 +1994,25 @@ async def gns3_run_guest_commands(
 
     Preferred entry for guest SSH / host-style ops playbook.
     """
-    try:
-        from .workflow.goals.run_guest_commands import run_guest_commands_goal
+    from .workflow.goals.run_guest_commands import run_guest_commands_goal
 
-        return await run_guest_commands_goal(
-            commands=commands,
-            host=host,
-            port=port,
-            project_name=project_name,
-            project_id=project_id,
-            node_name=node_name,
-            node_id=node_id,
-            ssh_username=ssh_username,
-            ssh_password=ssh_password,
-            stop_on_error=stop_on_error,
-            host_key_policy=host_key_policy,
-            connect_timeout=connect_timeout,
-            server_url=server_url,
-            username=username,
-            password=password,
-        )
-    except Exception as e:
-        logger.error(f"gns3_run_guest_commands failed: {e}")
-        return {
-            "status": "error",
-            "goal": "run_guest_commands",
-            "error": str(e),
-            "steps": [],
-        }
+    return await run_guest_commands_goal(
+        commands=commands,
+        host=host,
+        port=port,
+        project_name=project_name,
+        project_id=project_id,
+        node_name=node_name,
+        node_id=node_id,
+        ssh_username=ssh_username,
+        ssh_password=ssh_password,
+        stop_on_error=stop_on_error,
+        host_key_policy=host_key_policy,
+        connect_timeout=connect_timeout,
+        server_url=server_url,
+        username=username,
+        password=password,
+    )
 
 
 async def gns3_prepare_image(
@@ -2169,26 +2033,22 @@ async def gns3_prepare_image(
 
     Preferred entry for image import + densify + Idle-PC playbook.
     """
-    try:
-        from .workflow.goals.prepare_image import prepare_image_goal
+    from .workflow.goals.prepare_image import prepare_image_goal
 
-        return await prepare_image_goal(
-            source_path=source_path,
-            emulator=emulator,
-            filename=filename,
-            compute_id=compute_id,
-            idle_pc_project_name=idle_pc_project_name,
-            idle_pc_project_id=idle_pc_project_id,
-            idle_pc_node_name=idle_pc_node_name,
-            idle_pc_node_id=idle_pc_node_id,
-            densify_template=densify_template,
-            server_url=server_url,
-            username=username,
-            password=password,
-        )
-    except Exception as e:
-        logger.error(f"gns3_prepare_image failed: {e}")
-        return {"status": "error", "goal": "prepare_image", "error": str(e), "steps": []}
+    return await prepare_image_goal(
+        source_path=source_path,
+        emulator=emulator,
+        filename=filename,
+        compute_id=compute_id,
+        idle_pc_project_name=idle_pc_project_name,
+        idle_pc_project_id=idle_pc_project_id,
+        idle_pc_node_name=idle_pc_node_name,
+        idle_pc_node_id=idle_pc_node_id,
+        densify_template=densify_template,
+        server_url=server_url,
+        username=username,
+        password=password,
+    )
 
 
 async def gns3_manage_snapshot(
@@ -2207,24 +2067,20 @@ async def gns3_manage_snapshot(
 
     Preferred entry for snapshot / reset playbook. Destructive ops need token.
     """
-    try:
-        from .workflow.goals.manage_snapshot import manage_snapshot_goal
+    from .workflow.goals.manage_snapshot import manage_snapshot_goal
 
-        return await manage_snapshot_goal(
-            operation=operation,
-            project_name=project_name,
-            project_id=project_id,
-            snapshot_name=snapshot_name,
-            snapshot_id=snapshot_id,
-            confirmation_token=confirmation_token,
-            safety_snapshot_name=safety_snapshot_name,
-            server_url=server_url,
-            username=username,
-            password=password,
-        )
-    except Exception as e:
-        logger.error(f"gns3_manage_snapshot failed: {e}")
-        return {"status": "error", "goal": "manage_snapshot", "error": str(e), "steps": []}
+    return await manage_snapshot_goal(
+        operation=operation,
+        project_name=project_name,
+        project_id=project_id,
+        snapshot_name=snapshot_name,
+        snapshot_id=snapshot_id,
+        confirmation_token=confirmation_token,
+        safety_snapshot_name=safety_snapshot_name,
+        server_url=server_url,
+        username=username,
+        password=password,
+    )
 
 
 async def gns3_finish_lab(
@@ -2242,22 +2098,17 @@ async def gns3_finish_lab(
 
     Preferred entry for finish lab / cleanup playbook. Never auto-stops without flags+token.
     """
-    try:
-        from .workflow.goals.finish_lab import finish_lab_goal
+    from .workflow.goals.finish_lab import finish_lab_goal
 
-        return await finish_lab_goal(
-            project_name=project_name,
-            project_id=project_id,
-            stop_nodes=stop_nodes,
-            close_project=close_project,
-            stop_server=stop_server,
-            confirmation_token=confirmation_token,
-            server_url=server_url,
-            username=username,
-            password=password,
-        )
-    except Exception as e:
-        logger.error(f"gns3_finish_lab failed: {e}")
-        return {"status": "error", "goal": "finish_lab", "error": str(e), "steps": []}
-
+    return await finish_lab_goal(
+        project_name=project_name,
+        project_id=project_id,
+        stop_nodes=stop_nodes,
+        close_project=close_project,
+        stop_server=stop_server,
+        confirmation_token=confirmation_token,
+        server_url=server_url,
+        username=username,
+        password=password,
+    )
 
