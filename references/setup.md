@@ -1,184 +1,91 @@
-# Setup: GNS3 skill (CLI-first)
+# Setup
 
-Primary surface is the **skill CLI** (`scripts/gns3`).
-
-Secrets: set via environment. Document **names only**. Never commit real passwords.
+This reference covers installation, entrypoints, and GNS3 server configuration. Operation discovery and invocation are in [CLI](cli.md); credential and token policy is in [Safety](safety.md).
 
 ## Prerequisites
 
-- GNS3 server reachable (default `http://127.0.0.1:3080`)
-- Python 3.10+
-- Deps: `httpx`, `pydantic`, `asyncssh`
+- Python 3.10 or newer
+- A reachable GNS3 server, or a local `gns3server` executable that the skill may start
+- Package dependencies installed through the project metadata
+
+## Install
+
+From the workspace root:
 
 ```bash
-# from workspace root — install skill editable (or use a venv that has deps)
-python3 -m venv gns3-skill/.venv && gns3-skill/.venv/bin/pip install -e 'gns3-skill[dev]'
-# or
+python3 -m venv gns3-skill/.venv
+gns3-skill/.venv/bin/pip install -e 'gns3-skill[dev]'
+```
+
+For a non-development installation:
+
+```bash
 pip install -e gns3-skill/
 ```
 
-## Environment variables
+The installed console entrypoint is:
+
+```bash
+gns3 list
+```
+
+The repository wrapper and module entrypoint expose the same three-command contract:
+
+```bash
+gns3-skill/.venv/bin/python gns3-skill/scripts/gns3 list
+gns3-skill/.venv/bin/python -m gns3_skill list
+```
+
+Use [CLI](cli.md) for `list`, `describe`, and `run` syntax.
+
+## Server connection configuration
 
 | Variable | Purpose |
-|----------|---------|
-| `GNS3_SERVER_URL` | REST base URL (default `http://localhost:3080`) |
-| `GNS3_USERNAME` / `GNS3_PASSWORD` | **Remote-server** override (or one-off kwarg). For a local GNS3 install the skill reads `[Server]` user/password from the local `gns3_server.conf` automatically — do **not** set these for local servers (see “Finding local server credentials” below). Resolution order: `--username`/`--password` kwargs > `GNS3_USERNAME`/`GNS3_PASSWORD` env > local `gns3_server.conf`. |
-| `GNS3_VERIFY_SSL` | TLS verify (`true`/`false`) |
-| `GNS3_SERVER_START_CMD` | Custom localhost start command (optional) |
-| `GNS3_SERVER_START_TIMEOUT` | Wait for auto-start (default `30`) |
-| `GNS3_SERVER_STOP_TIMEOUT` | Wait after SIGTERM before SIGKILL (default `10`) |
-| `GNS3_SERVER_HEALTHY_CACHE_SECONDS` | Skip re-probe window (default `30`) |
-| `GNS3_CONSOLE_USER` / `GNS3_CONSOLE_PASSWORD` | Default device console login |
-| `GNS3_CONSOLE_READY_TIMEOUT` | Console login readiness budget seconds (default `30`) |
-| `GNS3_CONSOLE_MAX_RESPONSE_BYTES` | Per-command console output cap (default `524288`) |
-| `GNS3_SSH_USER` / `GNS3_SSH_PASSWORD` | Default guest SSH |
-| `GNS3_SSH_HOST_KEY_POLICY` | `accept_new` (default) / `strict` / `warn` |
-| `GNS3_SSH_CONNECT_TIMEOUT` | SSH connect readiness budget with retries (default `30`) |
-| `GNS3_CONFIRM_TOKEN_TTL_SECONDS` | One-time destructive goal token TTL (default `600`) |
-| `GNS3_CONFIRM_TOKEN_STORE` | Override path for the persisted confirm-token store (default: `$XDG_RUNTIME_DIR/gns3-skill/confirm-tokens.json`, fallback `~/.cache/gns3-skill/confirm-tokens.json`, mode 0600) |
+| --- | --- |
+| `GNS3_SERVER_URL` | GNS3 REST base URL; default is `http://localhost:3080`. |
+| `GNS3_USERNAME` / `GNS3_PASSWORD` | Remote-server authentication override. Local installs normally use the local server config. |
+| `GNS3_VERIFY_SSL` | Enable or disable TLS certificate verification. |
+| `GNS3_TIMEOUT` | REST request timeout. |
+| `GNS3_SERVER_START_CMD` | Optional custom command used to start a local server. |
+| `GNS3_SERVER_START_TIMEOUT` | Local server startup wait. |
+| `GNS3_SERVER_STOP_TIMEOUT` | Local shutdown wait before forced termination. |
+| `GNS3_SERVER_HEALTHY_CACHE_SECONDS` | Healthy-probe cache window. |
 
-API `username`/`password` tool fields / `GNS3_USERNAME` / `GNS3_PASSWORD` are **not** guest console/SSH credentials — they authenticate the GNS3 **server** and, for a local install, are normally sourced automatically from `gns3_server.conf` (don’t set them for local servers). Guest SSH / console credentials are separate; see `GNS3_SSH_*` / `GNS3_CONSOLE_*` above.
-Confirmation tokens (for destructive goal ops — `gns3_manage_snapshot` restore/delete, `gns3_finish_lab` with true flags) are **persisted to a local file** so a token issued in one CLI call’s `confirmation_required` preview survives into the follow-up execute call in a separate CLI process. The store is `gns3-skill/confirm-tokens.json` under `XDG_RUNTIME_DIR` (fallback `~/.cache`, mode 0600) and can be overridden with `GNS3_CONFIRM_TOKEN_STORE=<path>`. Tokens are single-use, action+target bound, and TTL-limited (`GNS3_CONFIRM_TOKEN_TTL_SECONDS`, default 600s). Don’t reuse a token after showing impact to the user — re-preview if the target or flags changed.
+Resolution precedence is:
 
-## Finding local server credentials
+1. explicit operation input;
+2. environment variable;
+3. local `gns3_server.conf` values where applicable;
+4. package default.
 
-When the local GNS3 server has **auth enabled** (`auth = True` under `[Server]` in its config), every REST call — including the `gns3_ensure_server` health probe — must carry `user` / `password`. **The skill reads those automatically from the local `gns3_server.conf`** — no `GNS3_*` env or shell ritual is required or expected for a normal local install. This section documents the file the skill reads, and what to do when the file’s credentials don’t satisfy the probe (missing/unreadable, wrong value, or a remote server with no local file).
+Server API credentials are distinct from console and guest SSH credentials. Follow [Safety](safety.md) for credential sourcing and secret handling.
 
-### 1. The file the skill reads (no manual step needed)
+## Local server configuration
 
-GNS3 writes the local server’s credentials into `gns3_server.conf` under `[Server]`. The skill reads this file itself at probe time (first readable candidate wins), so for a normal local install you don’t have to do anything — `gns3_ensure_server` / `gns3_prepare_lab` just work.
+For a local GNS3 installation, the skill reads the first existing, readable `gns3_server.conf` candidate:
 
-Config locations the skill searches, in order:
-
-- Linux: `~/.config/GNS3/2.2/gns3_server.conf` (most common)
+- Linux: `~/.config/GNS3/2.2/gns3_server.conf`
 - macOS: `~/Library/Application Support/GNS3/2.2/gns3_server.conf`
-- Windows: `%APPDATA%\GNS3\2.2\gns3_server.conf`
-- Bundled/packaged server: `~/Documents/GNS3/embedded/gns3_server.conf`
-- Portable/older Linux: `~/GNS3/gns3_server.conf`
+- Windows: `%APPDATA%/GNS3/2.2/gns3_server.conf`
+- Bundled installation: `~/Documents/GNS3/embedded/gns3_server.conf`
+- Portable/older installation: `~/GNS3/gns3_server.conf`
 
-Fields the skill consumes from `[Server]`:
+The `[Server]` keys consumed are `auth`, `user`, `password`, `host`, and `port`. Never print their values while diagnosing setup.
 
-| Key | Meaning |
-|-----|---------|
-| `auth` | `True` → credentials required; the skill uses `user` / `password` from the same file |
-| `user` | API username |
-| `password` | API password |
-| `host` / `port` | used to construct `server_url` when neither `--server_url` nor `GNS3_SERVER_URL` is given |
+When neither explicit input nor environment specifies a URL, `host` and `port` provide the local URL before the default is used. If authentication is enabled, `user` and `password` provide the local API credentials.
 
-`server_url` resolution (highest precedence first): `--server_url` kwarg > `GNS3_SERVER_URL` env > `[Server] host:port` from the local conf > default `http://localhost:3080`.
+## Remote server configuration
 
-### 2. Diagnostic: confirm what the skill will read (names only, value never echoed)
+A remote server does not use the workstation's local GNS3 configuration. Set the remote URL and source its API credentials through the explicit or environment inputs above. Use only variable names in shared instructions; provide actual values through the user's approved secret-handling path.
 
-If a probe returns `401`, verify the file is present and `auth = True`:
+The skill probes but never auto-starts or stops a remote server.
 
-```bash
-# Print key NAMES only — values are redacted so the secret never lands in transcript history.
-conf="$HOME/.config/GNS3/2.2/gns3_server.conf"
-awk -F' *= *' '/^\[Server\]/{s=1;next} s && /^(user|password|auth|host|port)[ \t]*=/{print "* "$1": <redacted>"}' "$conf"
-# e.g. * auth: <redacted>  * user: <redacted>  * password: <redacted>  * host: <redacted>  * port: <redacted>
-```
+## Authentication diagnosis
 
-If the file is missing or its `user`/`password` differ from the server’s actual auth, that is the 401’s root cause — see step 4.
+If an operation returns an auth error with HTTP status `401` or `403`:
 
-### 3. Remote GNS3 server (no local conf to read): use env / kwargs
+1. for local GNS3, verify that one supported config file is readable and its `[Server]` authentication fields match the running server;
+2. for remote GNS3, verify the configured remote credential source;
+3. retry once with the corrected source.
 
-For a **remote** server (a host on another machine, no local `gns3_server.conf`), the env vars / kwargs are the supported override:
-
-```bash
-# One-off via the CLI (credentials never logged):
-CMP=gns3-skill/.venv/bin/python
-$CMP gns3-skill/scripts/gns3 gns3_ensure_server \
-    --server_url=http://10.0.0.5:3080 --username=ops --password=**** --force=true
-
-# Or export for the whole shell:
-export GNS3_SERVER_URL=http://10.0.0.5:3080
-export GNS3_USERNAME=ops
-export GNS3_PASSWORD=****        # never `echo` this; the value lives only in the process env
-$CMP gns3-skill/scripts/gns3 gns3_ensure_server --force=true
-```
-
-### 4. If the server has auth off but you still see 401
-
-That is not a credential problem — clear the cached unreachable result and reprobe:
-
-```bash
-gns3-skill/.venv/bin/python gns3-skill/scripts/gns3 gns3_ensure_server --force=true
-```
-
-(The healthy cache lasts `GNS3_SERVER_HEALTHY_CACHE_SECONDS`, default 30s; `--force=true` bypasses it now.)
-
-### 5. Ask, don’t brute-force
-
-If the local config file is missing/empty, or `auth = True` but its `user`/`password` are blank or rejected by the server, **ask the user once** for the credentials (do not iterate candidate passwords). One lookup (config file) → one ask (if config unavailable) → one retry with the real value. Pass the answer via `--username` / `--password` (or `GNS3_USERNAME` / `GNS3_PASSWORD` for a remote server) and never print the value into the transcript.
-
-## Source layout
-
-Source of truth: `gns3-skill/src/gns3_skill/` — standalone async Python package dispatched via CLI.
-CLI lives at `gns3_skill.cli` / `scripts/gns3`.
-
-## Install skill (this monorepo layout)
-
-Canonical skill monofolder:
-
-```text
-gns3-skill/
-  SKILL.md
-  scripts/gns3
-  src/gns3_skill/   # library package (source of truth)
-  references/
-```
-
-Workspace hosts should symlink (not copy):
-
-```bash
-# from gns3-test workspace root
-ln -sfn ../../gns3-skill .agents/skills/gns3-skill
-ln -sfn ../../gns3-skill .omp/skills/gns3-skill
-```
-
-Confirm:
-
-```bash
-ls -la .agents/skills/gns3-skill .omp/skills/gns3-skill
-readlink -f .agents/skills/gns3-skill
-```
-
-## CLI usage
-
-```bash
-PY=gns3-skill/.venv/bin/python   # or python3 after pip install -e gns3-skill/
-
-$PY gns3-skill/scripts/gns3 list
-$PY gns3-skill/scripts/gns3 gns3_prepare_lab --project_name=demo
-$PY gns3-skill/scripts/gns3 gns3_list_projects
-$PY gns3-skill/scripts/gns3 gns3_list_nodes --json '{"project_id":"<uuid>"}'
-```
-
-There is **one** script: `scripts/gns3`. Tool name is the first argument. Do not invent `scripts/gns3_prepare_lab`.
-
-After `pip install -e gns3-skill/`, the console script `gns3` is also available.
-
-## Smoke check
-
-```bash
-$PY gns3-skill/scripts/gns3 list | tail -5          # expect Total: 58
-$PY gns3-skill/scripts/gns3 gns3_list_projects      # real project list or ensure+list
-```
-
-## Device default credentials
-
-Common GNS3 appliance defaults for console login (pass via `--login_username` / `--login_password` to `gns3_send_console_commands`):
-
-| Appliance | Username | Password | Notes |
-|-----------|----------|----------|-------|
-| SONiC VS | `admin` | `YourPaSsWoRd` | Default for the official SONiC VS qcow2 image |
-| Cisco IOS | — | — | No login by default; optional `enable` secret |
-| Cisco IOSv | — | — | Same as IOS |
-
-When in doubt, consult the appliance documentation. Do not guess passwords.
-
-## Skill core
-
-- Rules: `../SKILL.md`
-- Playbooks: `playbooks.md`
-- Capability matrix: `capability-matrix.md`
+Do not guess credentials or cycle through candidate values. See [Safety](safety.md) for the mandatory failure procedure.
