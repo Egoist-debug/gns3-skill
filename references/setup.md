@@ -29,6 +29,13 @@ The installed console entrypoint is:
 gns3 list
 ```
 
+> **PATH collision with the GNS3 GUI.** On a workstation that also has the GNS3
+> GUI installed, a bare `gns3` may resolve to the GUI binary (`/usr/bin/gns3`)
+> instead of this skill's console entrypoint. The GUI aborts headless with a Qt
+> "no display" error. Use one of the venv-qualified forms below (or activate the
+> venv and ensure its `bin` directory precedes the GUI in `PATH`). Never rely on
+> a bare `gns3` when both installations exist.
+
 The repository wrapper and module entrypoint expose the same three-command contract:
 
 ```bash

@@ -31,7 +31,7 @@ OPERATIONS: Tuple[OperationSpec, ...] = (
     _goal("prepare_lab", prepare_lab_goal, "Ensure the server and resolve, create, and open a lab project."),
     _goal("build_topology", build_topology_goal, "Converge project nodes and links, optionally start and validate them."),
     _goal("configure_devices", configure_devices_goal, "Configure named devices through console commands or templates.", "targets"),
-    _goal("diagnose_connectivity", diagnose_connectivity_goal, "Validate topology and collect evidence from suspect devices.", "suspect_nodes"),
+    _goal("diagnose_connectivity", diagnose_connectivity_goal, "Validate topology and collect evidence from suspect devices."),
     _goal("run_guest_commands", run_guest_commands_goal, "Run ordered shell commands on a guest by host or node identity.", "ssh_password"),
     _goal("prepare_image", prepare_image_goal, "Import an emulator image and optionally compute Dynamips Idle-PC."),
     _goal("manage_snapshot", manage_snapshot_goal, "Create, list, restore, or delete project snapshots safely.", "confirmation_token"),

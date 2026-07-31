@@ -6,7 +6,7 @@ import json
 import types
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Awaitable, Callable, Dict, Mapping, Optional, Union, get_args, get_origin, get_type_hints
+from typing import Any, Awaitable, Callable, Dict, Literal, Mapping, Optional, Union, get_args, get_origin, get_type_hints, is_typeddict
 
 
 class OperationTier(str, Enum):
@@ -185,6 +185,29 @@ def _annotation_schema(annotation: Any) -> Dict[str, Any]:
         if nullable:
             schema["nullable"] = True
         return schema
+    if origin is Literal:
+        schema: Dict[str, Any] = {"enum": list(args)}
+        literal_types = {type(value) for value in args}
+        if literal_types == {str}:
+            schema["type"] = "string"
+        elif literal_types == {bool}:
+            schema["type"] = "boolean"
+        elif literal_types == {int}:
+            schema["type"] = "integer"
+        elif literal_types <= {int, float}:
+            schema["type"] = "number"
+        return schema
+    if is_typeddict(annotation):
+        hints = get_type_hints(annotation)
+        required_keys = getattr(annotation, "__required_keys__", frozenset())
+        return {
+            "type": "object",
+            "properties": {
+                name: _annotation_schema(value) for name, value in hints.items()
+            },
+            "required": [name for name in hints if name in required_keys],
+            "additionalProperties": False,
+        }
     if annotation is str:
         return {"type": "string"}
     if annotation is bool:

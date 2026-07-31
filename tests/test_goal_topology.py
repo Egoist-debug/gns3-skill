@@ -221,6 +221,19 @@ class BuildTopologyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["status"], "conflict")
         self.assertNotIn("create_node_from_template", client.calls)
 
+    async def test_node_creation_defaults_to_local_compute(self):
+        client = FakeClient()
+        result = await build_topology_goal(
+            context=FakeContext(client),
+            project_id="p1",
+            nodes=[{"name": "R3", "template_id": "template-3"}],
+            validate=False,
+        )
+
+        self.assertEqual(result["status"], "success")
+        created = next(node for node in client.nodes if node.get("name") == "R3")
+        self.assertEqual(created["compute_id"], "local")
+
     async def test_second_link_failure_reports_partial(self):
         client = FakeClient(fail_create_at=2)
         result = await self._run(
@@ -259,6 +272,12 @@ class ExpertTopologyTests(unittest.IsolatedAsyncioTestCase):
 
 
 class DiagnoseTopologyTests(unittest.IsolatedAsyncioTestCase):
+    async def test_missing_project_selector_returns_goal_error(self):
+        result = await diagnose_connectivity_goal(context=FakeContext(FakeClient()))
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("project_id or project_name", result["error"])
+
     async def test_shared_validation_marks_overlap_invalid(self):
         client = FakeClient()
         client.nodes[1]["x"] = 0

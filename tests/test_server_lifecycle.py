@@ -164,6 +164,9 @@ class EnsureServerTests(unittest.IsolatedAsyncioTestCase):
             "gns3_skill.server_lifecycle._spawn_server",
             new=AsyncMock(return_value=(12345, "")),
         ) as spawn, patch(
+            "gns3_skill.server_lifecycle._pids_listening_on_port",
+            return_value=[],
+        ), patch(
             "gns3_skill.server_lifecycle._start_timeout",
             return_value=5.0,
         ), patch(

@@ -23,6 +23,10 @@ gns3 describe <operation>
 gns3 run <operation> [--key=value ...] [--json '{...}']
 ```
 
+On machines where the GNS3 GUI also ships a `gns3` command, activate the skill
+venv or use the venv-qualified invocation (see [Setup](references/setup.md)) so
+the skill CLI wins; a bare `gns3` may otherwise resolve to the GUI.
+
 `list` defaults to goal operations. Operation IDs never have a redundant prefix. Use [CLI reference](references/cli.md) for discovery, schemas, input rules, envelopes, and exits.
 
 ## Hard safety invariants

@@ -228,6 +228,28 @@ class RunInputCliTests(unittest.TestCase):
                 self.assertNotIn("result", payload)
                 self.assertEqual(json.loads(raw), payload)
                 invoke_mock.assert_not_awaited()
+    def test_nested_unknown_fields_and_invalid_snapshot_operation_are_usage_errors(self):
+        cases = [
+            (
+                [
+                    "run",
+                    "build_topology",
+                    "--json",
+                    '{"project_id":"p1","links":[{"nodes":[]}]}',
+                ],
+                "",
+            ),
+            (["run", "manage_snapshot", "--operation=delete"], ""),
+        ]
+
+        for argv, stdin in cases:
+            with self.subTest(argv=argv):
+                with patch("gns3_skill.cli.invoke", new=AsyncMock()) as invoke_mock:
+                    status, payload, _raw, _stderr = _call_cli(argv, stdin=stdin)
+                self.assertEqual(status, 2)
+                self.assertEqual(payload["error"]["type"], "usage")
+                invoke_mock.assert_not_awaited()
+
 
     def test_usage_error_does_not_echo_sensitive_values(self):
         secret = "do-not-leak-this-password"

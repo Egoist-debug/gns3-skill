@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, TypedDict, Union
 
 from gns3_skill.gns3_client import GNS3APIClient
 from gns3_skill.runtime import OperationContext
@@ -29,6 +29,35 @@ from gns3_skill.workflow.resolve import (
 from gns3_skill.workflow.runner import Step, run_steps
 from gns3_skill.workflow.topology import node_port_keys, validate_topology_snapshot
 
+class _TopologyNodeRequired(TypedDict):
+    name: str
+
+
+class TopologyNodeSpec(_TopologyNodeRequired, total=False):
+    template_id: str
+    template_name: str
+    compute_id: str
+    x: int
+    y: int
+
+
+class _LinkEndpointRequired(TypedDict):
+    node_name: str
+
+
+class LinkEndpointSpec(_LinkEndpointRequired, total=False):
+    adapter: int
+    port: int
+
+
+LinkEndpointInput = Union[str, LinkEndpointSpec]
+
+
+class TopologyLinkSpec(TypedDict):
+    a: LinkEndpointInput
+    b: LinkEndpointInput
+
+
 
 def _endpoint_spec(end: Dict[str, Any]) -> Tuple[str, Optional[int], Optional[int]]:
     name = (end.get("node_name") or end.get("name") or "").strip()
@@ -48,8 +77,8 @@ async def build_topology_goal(
     context: OperationContext,
     project_name: Optional[str] = None,
     project_id: Optional[str] = None,
-    nodes: Optional[List[Dict[str, Any]]] = None,
-    links: Optional[List[Dict[str, Any]]] = None,
+    nodes: Optional[List[TopologyNodeSpec]] = None,
+    links: Optional[List[TopologyLinkSpec]] = None,
     start: bool = False,
     validate: bool = True,
 ) -> Dict[str, Any]:
@@ -193,7 +222,7 @@ async def build_topology_goal(
                     x=int(spec.get("x") or 0),
                     y=int(spec.get("y") or 0),
                     name=name,
-                    compute_id=spec.get("compute_id"),
+                    compute_id=spec.get("compute_id") or "local",
                 )
             except Exception as exc:
                 return step_entry(

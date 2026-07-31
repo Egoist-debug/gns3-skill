@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from gns3_skill.gns3_client import GNS3APIClient
 from gns3_skill.runtime import OperationContext
@@ -15,6 +15,7 @@ from gns3_skill.workflow.envelopes import (
     STEP_SKIPPED,
     STEP_SUCCESS,
     confirmation_required_envelope,
+    error_envelope,
     goal_envelope,
     step_entry,
 )
@@ -27,11 +28,29 @@ from gns3_skill.workflow.resolve import (
 
 _DESTRUCTIVE = {"restore", "delete_snapshot", "delete_project"}
 
+SnapshotOperation = Literal[
+    "create", "list", "restore", "delete_snapshot", "delete_project"
+]
+
+
+def _unused_snapshot_name(base: str, snapshots: List[Dict[str, Any]]) -> str:
+    names = {
+        str(snapshot.get("name"))
+        for snapshot in snapshots
+        if isinstance(snapshot, dict) and snapshot.get("name")
+    }
+    if base not in names:
+        return base
+    suffix = 2
+    while f"{base}-{suffix}" in names:
+        suffix += 1
+    return f"{base}-{suffix}"
+
 
 async def manage_snapshot_goal(
     *,
     context: OperationContext,
-    operation: str,
+    operation: SnapshotOperation,
     project_name: Optional[str] = None,
     project_id: Optional[str] = None,
     snapshot_name: Optional[str] = None,
@@ -95,9 +114,37 @@ async def manage_snapshot_goal(
             )
         )
 
+    def failure(
+        step: str,
+        error: str,
+        *,
+        next_hint: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        steps.append(step_entry(step, STEP_FAILED, error=error))
+        had_change = any(entry.get("status") == STEP_CHANGED for entry in steps)
+        return goal_envelope(
+            goal,
+            STATUS_PARTIAL if had_change else "error",
+            steps,
+            error=error,
+            next_hint=next_hint,
+        )
+
     target = {"operation": op, "project_id": pid}
     if resolved_snapshot is not None:
         target["snapshot_id"] = resolved_snapshot.get("snapshot_id")
+
+    safety_base: Optional[str] = None
+    if op == "restore":
+        assert resolved_snapshot is not None
+        default_safety_name = (
+            "safety-before-restore-"
+            f"{resolved_snapshot.get('name') or resolved_snapshot.get('snapshot_id')}"
+        )
+        safety_base = (safety_snapshot_name or default_safety_name).strip()
+        if not safety_base:
+            return failure("restore_preflight", "safety_snapshot_name may not be empty")
+        target["safety_snapshot_name"] = safety_base
 
     if op in _DESTRUCTIVE and not confirmation_token:
         token, expires = issue_token(op, target)
@@ -110,7 +157,9 @@ async def manage_snapshot_goal(
         }
         if op == "restore":
             impact["note"] = (
-                "restore will be preceded by an automatic safety snapshot when possible"
+                "restore opens the project, stops non-stopped nodes, creates a "
+                "collision-free safety snapshot, restores the requested snapshot, "
+                "and leaves the project open"
             )
         steps.append(
             step_entry(
@@ -129,6 +178,36 @@ async def manage_snapshot_goal(
             expires_at=expires,
         )
 
+    restore_nodes: List[Dict[str, Any]] = []
+    safety_name = safety_base
+    if op == "restore":
+        try:
+            restore_nodes = await client.get_project_nodes(pid)
+            observed_snapshots = await client.get_snapshots(pid)
+        except Exception as exc:
+            return failure(
+                "restore_preflight",
+                str(exc),
+                next_hint="The confirmation token was not consumed; retry after the project is readable",
+            )
+        assert safety_base is not None
+        safety_name = _unused_snapshot_name(safety_base, observed_snapshots)
+        steps.append(
+            step_entry(
+                "restore_preflight",
+                STEP_SUCCESS,
+                detail={
+                    "project_status": project.get("status"),
+                    "nodes_to_stop": [
+                        node.get("name")
+                        for node in restore_nodes
+                        if node.get("status") != "stopped"
+                    ],
+                    "safety_snapshot_name": safety_name,
+                },
+            )
+        )
+
     if op in _DESTRUCTIVE:
         consumed = consume_token(confirmation_token, op, target)
         if not consumed.get("ok"):
@@ -141,22 +220,6 @@ async def manage_snapshot_goal(
                 STEP_SUCCESS,
                 detail={"phase": "consumed", "action": op},
             )
-        )
-
-    def failure(
-        step: str,
-        error: str,
-        *,
-        next_hint: Optional[str] = None,
-    ) -> Dict[str, Any]:
-        steps.append(step_entry(step, STEP_FAILED, error=error))
-        had_change = any(entry.get("status") == STEP_CHANGED for entry in steps)
-        return goal_envelope(
-            goal,
-            STATUS_PARTIAL if had_change else "error",
-            steps,
-            error=error,
-            next_hint=next_hint,
         )
 
     result: Dict[str, Any]
@@ -211,15 +274,67 @@ async def manage_snapshot_goal(
             )
             result = {"snapshot": existing, "action": "reuse"}
     elif op == "restore":
-        assert resolved_snapshot is not None
-        safety_name = safety_snapshot_name or (
-            "safety-before-restore-"
-            f"{resolved_snapshot.get('name') or resolved_snapshot.get('snapshot_id')}"
+        assert resolved_snapshot is not None and safety_name is not None
+
+        if project.get("status") != "opened":
+            try:
+                await client.open_project(pid)
+            except Exception as exc:
+                return failure("open_project", str(exc))
+            steps.append(
+                step_entry(
+                    "open_project", STEP_CHANGED, detail={"project_id": pid}
+                )
+            )
+        else:
+            steps.append(
+                step_entry(
+                    "open_project",
+                    STEP_SKIPPED,
+                    detail={"reason": "project already opened"},
+                )
+            )
+
+        nodes_to_stop = [
+            node for node in restore_nodes if node.get("status") != "stopped"
+        ]
+        stopped: List[Any] = []
+        stop_failures: List[Dict[str, Any]] = []
+        for node in nodes_to_stop:
+            try:
+                await client.stop_node(pid, node["node_id"])
+                stopped.append(node.get("name"))
+            except Exception as exc:
+                stop_failures.append(
+                    {"name": node.get("name"), "error": str(exc)}
+                )
+        if stop_failures:
+            return failure(
+                "stop_nodes",
+                "some nodes failed to stop"
+                if stopped
+                else "all node stop attempts failed",
+                next_hint="Stop every node, then request a new restore preview if the token was consumed",
+            )
+        steps.append(
+            step_entry(
+                "stop_nodes",
+                STEP_CHANGED if stopped else STEP_SKIPPED,
+                detail={
+                    "stopped": stopped,
+                    "reason": None if stopped else "all nodes already stopped",
+                },
+            )
         )
+
         try:
             safety = await client.create_snapshot(pid, safety_name)
         except Exception as exc:
-            return failure("safety_snapshot", f"safety snapshot failed: {exc}")
+            return failure(
+                "safety_snapshot",
+                f"safety snapshot failed: {exc}",
+                next_hint="Inspect current project/node state, then request a new restore preview",
+            )
         steps.append(
             step_entry(
                 "safety_snapshot",
@@ -232,16 +347,53 @@ async def manage_snapshot_goal(
                 },
             )
         )
+
+        async def ensure_open_after_restore() -> Optional[str]:
+            try:
+                current_project = await client.get_project(pid)
+                if current_project.get("status") == "opened":
+                    steps.append(
+                        step_entry(
+                            "reopen_project",
+                            STEP_SKIPPED,
+                            detail={"reason": "project already opened"},
+                        )
+                    )
+                    return None
+                await client.open_project(pid)
+            except Exception as exc:
+                return str(exc)
+            steps.append(
+                step_entry(
+                    "reopen_project", STEP_CHANGED, detail={"project_id": pid}
+                )
+            )
+            return None
+
         try:
             restored = await client.restore_snapshot(
                 pid, resolved_snapshot["snapshot_id"]
             )
         except Exception as exc:
-            return failure(
-                "restore_snapshot",
-                str(exc),
+            restore_error = str(exc)
+            steps.append(
+                step_entry("restore_snapshot", STEP_FAILED, error=restore_error)
+            )
+            reopen_error = await ensure_open_after_restore()
+            if reopen_error:
+                steps.append(
+                    step_entry("reopen_project", STEP_FAILED, error=reopen_error)
+                )
+                restore_error = (
+                    f"{restore_error}; project reopen failed: {reopen_error}"
+                )
+            return goal_envelope(
+                goal,
+                STATUS_PARTIAL,
+                steps,
+                error=restore_error,
                 next_hint=(
-                    f"Safety snapshot {safety_name!r} exists; inspect state and retry restore"
+                    f"Safety snapshot {safety_name!r} exists; inspect state and request a new restore preview"
                 ),
             )
         steps.append(
@@ -254,7 +406,23 @@ async def manage_snapshot_goal(
                 },
             )
         )
-        result = {"restored": restored, "from_snapshot": resolved_snapshot}
+        reopen_error = await ensure_open_after_restore()
+        if reopen_error:
+            return failure(
+                "reopen_project",
+                reopen_error,
+                next_hint="The snapshot was restored, but the project could not be reopened",
+            )
+        result = {
+            "restored": restored,
+            "from_snapshot": resolved_snapshot,
+            "safety_snapshot": {
+                "name": safety_name,
+                "snapshot_id": safety.get("snapshot_id")
+                if isinstance(safety, dict)
+                else None,
+            },
+        }
     elif op == "delete_snapshot":
         assert resolved_snapshot is not None
         try:

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, TypedDict
 
 from gns3_skill.config_templates import ConfigTemplates
 from gns3_skill.gns3_client import GNS3APIClient
@@ -20,6 +20,19 @@ from gns3_skill.workflow.envelopes import (
 )
 from gns3_skill.workflow.resolve import ResolveAmbiguous, ResolveMissing, resolve_node, resolve_project
 from gns3_skill.workflow.runner import Step, run_steps
+
+class ConfigureTarget(TypedDict, total=False):
+    node_name: str
+    node_id: str
+    commands: List[str]
+    template_name: str
+    params: Dict[str, Any]
+    enter_config_mode: bool
+    save_config: bool
+    enable_password: str
+    login_username: str
+    login_password: str
+
 
 
 def _template_commands(template_name: str, params: Dict[str, Any]) -> List[str]:
@@ -69,7 +82,7 @@ async def configure_devices_goal(
     context: OperationContext,
     project_name: Optional[str] = None,
     project_id: Optional[str] = None,
-    targets: Optional[List[Dict[str, Any]]] = None,
+    targets: Optional[List[ConfigureTarget]] = None,
 ) -> Dict[str, Any]:
     goal = "configure_devices"
     targets = targets or []

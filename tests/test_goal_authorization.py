@@ -189,8 +189,9 @@ class SnapshotAuthorizationTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_restore_failure_after_safety_snapshot_is_partial(self):
         client = FakeClient(
-            get_project={"project_id": "p1", "name": "lab"},
+            get_project={"project_id": "p1", "name": "lab", "status": "opened"},
             get_snapshots=[{"snapshot_id": "s1", "name": "base"}],
+            get_project_nodes=[],
             create_snapshot={"snapshot_id": "safe1", "name": "safety"},
             restore_snapshot=RuntimeError("restore failed"),
         )

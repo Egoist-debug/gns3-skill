@@ -76,6 +76,42 @@ class RegistryContractTests(unittest.TestCase):
         self.assertEqual(
             ensure_server["schema"]["properties"]["force"]["default"], False
         )
+    def test_goal_schemas_describe_nested_inputs_and_snapshot_enum(self):
+        build = describe_operation("build_topology")
+        configure = describe_operation("configure_devices")
+        snapshot = describe_operation("manage_snapshot")
+        assert build is not None and configure is not None and snapshot is not None
+
+        node = build["schema"]["properties"]["nodes"]["items"]
+        self.assertIn("name", node["required"])
+        self.assertFalse(node["additionalProperties"])
+        self.assertIn("template_name", node["properties"])
+        self.assertIn("compute_id", node["properties"])
+
+        link = build["schema"]["properties"]["links"]["items"]
+        self.assertEqual(set(link["required"]), {"a", "b"})
+        self.assertFalse(link["additionalProperties"])
+        endpoint = next(
+            choice
+            for choice in link["properties"]["a"]["anyOf"]
+            if choice.get("type") == "object"
+        )
+        self.assertIn("node_name", endpoint["required"])
+        self.assertEqual(
+            set(endpoint["properties"]), {"node_name", "adapter", "port"}
+        )
+        self.assertFalse(endpoint["additionalProperties"])
+
+        target = configure["schema"]["properties"]["targets"]["items"]
+        self.assertFalse(target["additionalProperties"])
+        self.assertIn("node_name", target["properties"])
+        self.assertIn("commands", target["properties"])
+
+        self.assertEqual(
+            snapshot["schema"]["properties"]["operation"]["enum"],
+            ["create", "list", "restore", "delete_snapshot", "delete_project"],
+        )
+
 
     def test_sensitive_parameters_are_marked_without_values(self):
         descriptions = [spec.to_dict() for spec in OPERATIONS]
@@ -106,8 +142,8 @@ class RegistryContractTests(unittest.TestCase):
         template = describe_operation("apply_config_template")
         assert configure is not None and diagnose is not None and template is not None
         self.assertTrue(configure["schema"]["properties"]["targets"]["sensitive"])
-        self.assertTrue(
-            diagnose["schema"]["properties"]["suspect_nodes"]["sensitive"]
+        self.assertNotIn(
+            "sensitive", diagnose["schema"]["properties"]["suspect_nodes"]
         )
         self.assertTrue(
             template["schema"]["properties"]["template_params"]["sensitive"]

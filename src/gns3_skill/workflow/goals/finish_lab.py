@@ -139,16 +139,6 @@ async def finish_lab_goal(
         )
         return goal_envelope(goal, "error", steps, error=error)
 
-    nodes: List[Dict[str, Any]] = []
-    if stop_nodes:
-        assert client is not None and pid is not None
-        try:
-            nodes = await client.get_project_nodes(pid)
-        except Exception as exc:
-            error = str(exc)
-            steps.append(step_entry("stop_nodes", STEP_FAILED, error=error))
-            return goal_envelope(goal, "error", steps, error=error)
-
     consumed = consume_token(confirmation_token, "finish_lab", target)
     if not consumed.get("ok"):
         error = consumed.get("error") or "token rejected"
@@ -184,45 +174,78 @@ async def finish_lab_goal(
             next_hint="Fix the failed cleanup step, observe current state, and retry safely",
         )
 
+    project_status = (project or {}).get("status")
+
     if stop_nodes:
-        stopped: List[Any] = []
-        failed: List[Dict[str, Any]] = []
-        for node in nodes:
+        if project_status == "closed":
+            steps.append(
+                step_entry(
+                    "stop_nodes",
+                    STEP_SKIPPED,
+                    detail={"reason": "project already closed"},
+                )
+            )
+        else:
+            assert client is not None and pid is not None
+            nodes: List[Dict[str, Any]] = []
             try:
-                await client.stop_node(pid, node["node_id"])
-                stopped.append(node.get("name"))
+                nodes = await client.get_project_nodes(pid)
             except Exception as exc:
-                failed.append({"name": node.get("name"), "error": str(exc)})
-        if failed:
-            return failed_result(
-                "stop_nodes",
-                "some nodes failed to stop" if stopped else "all node stop attempts failed",
-                detail={"stopped": stopped, "failed": failed},
-                mutated=bool(stopped),
+                error = str(exc)
+                steps.append(step_entry("stop_nodes", STEP_FAILED, error=error))
+                return goal_envelope(goal, "error", steps, error=error)
+            stopped: List[Any] = []
+            failed: List[Dict[str, Any]] = []
+            for node in nodes:
+                if node.get("status") == "stopped":
+                    continue
+                try:
+                    await client.stop_node(pid, node["node_id"])
+                    stopped.append(node.get("name"))
+                except Exception as exc:
+                    failed.append({"name": node.get("name"), "error": str(exc)})
+            if failed:
+                return failed_result(
+                    "stop_nodes",
+                    "some nodes failed to stop" if stopped else "all node stop attempts failed",
+                    detail={"stopped": stopped, "failed": failed},
+                    mutated=bool(stopped),
+                )
+            steps.append(
+                step_entry(
+                    "stop_nodes",
+                    STEP_CHANGED if stopped else STEP_SKIPPED,
+                    detail={
+                        "stopped": stopped,
+                        "reason": None if stopped else "all nodes already stopped",
+                    },
+                )
             )
-        steps.append(
-            step_entry(
-                "stop_nodes",
-                STEP_CHANGED if stopped else STEP_SUCCESS,
-                detail={"stopped": stopped},
-            )
-        )
     else:
         steps.append(
             step_entry("stop_nodes", STEP_SKIPPED, detail={"reason": "stop_nodes=false"})
         )
 
     if close_project:
-        assert client is not None and pid is not None
-        try:
-            await client.close_project(pid)
-        except Exception as exc:
-            return failed_result("close_project", str(exc))
-        steps.append(
-            step_entry(
-                "close_project", STEP_CHANGED, detail={"project_id": pid}
+        if project_status == "closed":
+            steps.append(
+                step_entry(
+                    "close_project",
+                    STEP_SKIPPED,
+                    detail={"reason": "project already closed"},
+                )
             )
-        )
+        else:
+            assert client is not None and pid is not None
+            try:
+                await client.close_project(pid)
+            except Exception as exc:
+                return failed_result("close_project", str(exc))
+            steps.append(
+                step_entry(
+                    "close_project", STEP_CHANGED, detail={"project_id": pid}
+                )
+            )
     else:
         steps.append(
             step_entry(

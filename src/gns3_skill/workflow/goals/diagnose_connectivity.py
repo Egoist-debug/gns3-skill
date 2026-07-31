@@ -13,6 +13,7 @@ from gns3_skill.workflow.envelopes import (
     STEP_FAILED,
     STEP_SKIPPED,
     STEP_SUCCESS,
+    error_envelope,
     goal_envelope,
     step_entry,
 )

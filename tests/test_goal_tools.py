@@ -100,11 +100,20 @@ class ManageSnapshotTests(unittest.IsolatedAsyncioTestCase):
 
     def tearDown(self):
         reset_tokens_for_tests()
+    async def test_invalid_operation_returns_goal_error(self):
+        result = await manage_snapshot_goal(
+            context=FakeContext(), operation="delete"
+        )
+
+        self.assertEqual(result["status"], "error")
+        self.assertIn("operation must be", result["error"])
+
 
     async def test_restore_requires_token_then_succeeds(self):
         client = FakeClient(
-            get_project={"project_id": "p1", "name": "lab"},
+            get_project={"project_id": "p1", "name": "lab", "status": "opened"},
             get_snapshots=[{"snapshot_id": "s1", "name": "snap1"}],
+            get_project_nodes=[],
             create_snapshot={"snapshot_id": "safe1", "name": "safety"},
             restore_snapshot={"ok": True},
         )
@@ -153,6 +162,119 @@ class ManageSnapshotTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(out["status"], "success")
         self.assertEqual(out["result"]["action"], "reuse")
         self.assertNotIn("create_snapshot", client.calls)
+    async def test_restore_prepares_project_avoids_collision_and_reopens(self):
+        project_status = "closed"
+        nodes = [{"node_id": "n1", "name": "R1", "status": "started"}]
+        snapshots = [
+            {"snapshot_id": "s1", "name": "base"},
+            {
+                "snapshot_id": "safe1",
+                "name": "safety-before-restore-base",
+            },
+        ]
+
+        def get_project(_project_id):
+            return {"project_id": "p1", "name": "lab", "status": project_status}
+
+        def open_project(_project_id):
+            nonlocal project_status
+            project_status = "opened"
+            return {"project_id": "p1", "name": "lab", "status": project_status}
+
+        def stop_node(_project_id, node_id):
+            next(node for node in nodes if node["node_id"] == node_id)["status"] = "stopped"
+            return {"ok": True}
+
+        def create_snapshot(_project_id, name):
+            self.assertEqual(project_status, "opened")
+            self.assertTrue(all(node["status"] == "stopped" for node in nodes))
+            self.assertEqual(name, "safety-before-restore-base-2")
+            snapshot = {"snapshot_id": "safe2", "name": name}
+            snapshots.append(snapshot)
+            return snapshot
+
+        def restore_snapshot(_project_id, _snapshot_id):
+            nonlocal project_status
+            project_status = "closed"
+            return {"ok": True}
+
+        client = FakeClient(
+            get_project=get_project,
+            get_snapshots=snapshots,
+            get_project_nodes=nodes,
+            open_project=open_project,
+            stop_node=stop_node,
+            create_snapshot=create_snapshot,
+            restore_snapshot=restore_snapshot,
+        )
+        context = FakeContext(client)
+        preview = await manage_snapshot_goal(
+            context=context,
+            operation="restore",
+            project_id="p1",
+            snapshot_name="base",
+        )
+        result = await manage_snapshot_goal(
+            context=context,
+            operation="restore",
+            project_id="p1",
+            snapshot_name="base",
+            confirmation_token=preview["result"]["confirmation_token"],
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertEqual(project_status, "opened")
+        self.assertEqual(client.calls.count("open_project"), 2)
+        self.assertLess(client.calls.index("open_project"), client.calls.index("stop_node"))
+        self.assertLess(client.calls.index("stop_node"), client.calls.index("create_snapshot"))
+        self.assertEqual(
+            result["result"]["safety_snapshot"]["name"],
+            "safety-before-restore-base-2",
+        )
+
+    async def test_failed_restore_recovers_open_project_state(self):
+        project_status = "opened"
+
+        def get_project(_project_id):
+            return {"project_id": "p1", "name": "lab", "status": project_status}
+
+        def open_project(_project_id):
+            nonlocal project_status
+            project_status = "opened"
+            return {"project_id": "p1", "status": project_status}
+
+        def restore_snapshot(_project_id, _snapshot_id):
+            nonlocal project_status
+            project_status = "closed"
+            raise RuntimeError("restore failed")
+
+        client = FakeClient(
+            get_project=get_project,
+            get_snapshots=[{"snapshot_id": "s1", "name": "base"}],
+            get_project_nodes=[],
+            open_project=open_project,
+            create_snapshot={"snapshot_id": "safe1", "name": "safety"},
+            restore_snapshot=restore_snapshot,
+        )
+        context = FakeContext(client)
+        preview = await manage_snapshot_goal(
+            context=context,
+            operation="restore",
+            project_id="p1",
+            snapshot_name="base",
+        )
+        result = await manage_snapshot_goal(
+            context=context,
+            operation="restore",
+            project_id="p1",
+            snapshot_name="base",
+            confirmation_token=preview["result"]["confirmation_token"],
+        )
+
+        self.assertEqual(result["status"], "partial")
+        self.assertEqual(project_status, "opened")
+        self.assertIn("open_project", client.calls)
+
 
 
 class FinishLabTests(unittest.IsolatedAsyncioTestCase):
@@ -187,6 +309,59 @@ class FinishLabTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(done["status"], "success")
         self.assertIn("stop_node", client.calls)
+
+    async def test_already_closed_project_cleanup_is_convergent(self):
+        client = FakeClient(
+            get_project={
+                "project_id": "p1",
+                "name": "lab",
+                "status": "closed",
+            }
+        )
+        context = FakeContext(client)
+        preview = await finish_lab_goal(
+            context=context,
+            project_id="p1",
+            stop_nodes=True,
+            close_project=True,
+        )
+        result = await finish_lab_goal(
+            context=context,
+            project_id="p1",
+            stop_nodes=True,
+            close_project=True,
+            confirmation_token=preview["result"]["confirmation_token"],
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn("get_project_nodes", client.calls)
+        self.assertNotIn("stop_node", client.calls)
+        self.assertNotIn("close_project", client.calls)
+
+    async def test_already_stopped_nodes_are_not_stopped_again(self):
+        client = FakeClient(
+            get_project={
+                "project_id": "p1",
+                "name": "lab",
+                "status": "opened",
+            },
+            get_project_nodes=[
+                {"node_id": "n1", "name": "R1", "status": "stopped"}
+            ],
+        )
+        context = FakeContext(client)
+        preview = await finish_lab_goal(
+            context=context, project_id="p1", stop_nodes=True
+        )
+        result = await finish_lab_goal(
+            context=context,
+            project_id="p1",
+            stop_nodes=True,
+            confirmation_token=preview["result"]["confirmation_token"],
+        )
+
+        self.assertEqual(result["status"], "success")
+        self.assertNotIn("stop_node", client.calls)
 
     async def test_remote_stop_server_fails_step(self):
         with patch(

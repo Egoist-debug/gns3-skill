@@ -7,7 +7,7 @@ import logging
 import re
 import types
 from dataclasses import dataclass, field
-from typing import Any, Dict, Mapping, Optional, Union, get_args, get_origin
+from typing import Any, Dict, Literal, Mapping, Optional, Union, get_args, get_origin, get_type_hints, is_typeddict
 
 from .contracts import OperationError, OperationOutcome, OperationSpec, OperationStatus
 from .gns3_client import GNS3APIClient, GNS3Config
@@ -350,6 +350,15 @@ def _coerce_scalar(raw: str, annotation: Any) -> Any:
                 last_error = exc
         if last_error:
             raise last_error
+    if origin is Literal:
+        for candidate in args:
+            try:
+                value = _coerce_scalar(raw, type(candidate))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                continue
+            if type(value) is type(candidate) and value == candidate:
+                return candidate
+        raise ValueError("value is not one of the accepted literals")
     if annotation in (inspect.Parameter.empty, Any):
         try:
             return json.loads(raw)
@@ -386,6 +395,23 @@ def _matches_annotation(value: Any, annotation: Any) -> bool:
     args = get_args(annotation)
     if origin in (Union, types.UnionType):
         return any(_matches_annotation(value, arg) for arg in args)
+    if origin is Literal:
+        return any(
+            type(value) is type(candidate) and value == candidate
+            for candidate in args
+        )
+    if is_typeddict(annotation):
+        if not isinstance(value, dict):
+            return False
+        hints = get_type_hints(annotation)
+        required_keys = getattr(annotation, "__required_keys__", frozenset())
+        if not required_keys.issubset(value):
+            return False
+        if not set(value).issubset(hints):
+            return False
+        return all(
+            _matches_annotation(item, hints[name]) for name, item in value.items()
+        )
     if annotation is type(None):
         return value is None
     if annotation is bool:
