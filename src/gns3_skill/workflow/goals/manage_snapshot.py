@@ -1,11 +1,11 @@
-"""gns3_manage_snapshot goal implementation."""
+"""Manage-snapshot goal implementation."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from gns3_skill.gns3_client import GNS3APIClient, GNS3Config
-from gns3_skill.server_lifecycle import ensure_gns3_server, normalize_server_url
+from gns3_skill.gns3_client import GNS3APIClient
+from gns3_skill.runtime import OperationContext
 from gns3_skill.workflow.confirm import consume_token, issue_token
 from gns3_skill.workflow.envelopes import (
     STATUS_PARTIAL,
@@ -15,7 +15,6 @@ from gns3_skill.workflow.envelopes import (
     STEP_SKIPPED,
     STEP_SUCCESS,
     confirmation_required_envelope,
-    error_envelope,
     goal_envelope,
     step_entry,
 )
@@ -31,6 +30,7 @@ _DESTRUCTIVE = {"restore", "delete_snapshot", "delete_project"}
 
 async def manage_snapshot_goal(
     *,
+    context: OperationContext,
     operation: str,
     project_name: Optional[str] = None,
     project_id: Optional[str] = None,
@@ -38,9 +38,6 @@ async def manage_snapshot_goal(
     snapshot_id: Optional[str] = None,
     confirmation_token: Optional[str] = None,
     safety_snapshot_name: Optional[str] = None,
-    server_url: str = "http://localhost:3080",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
 ) -> Dict[str, Any]:
     goal = "manage_snapshot"
     op = (operation or "").strip().lower()
@@ -50,22 +47,14 @@ async def manage_snapshot_goal(
             "operation must be create|list|restore|delete_snapshot|delete_project",
         )
 
-    url = normalize_server_url(server_url)
-    config = GNS3Config.from_env(
-        server_url=url, username=username, password=password
-    )
     steps = []
-    ensure = await ensure_gns3_server(
-        config.server_url,
-        username=config.username,
-        password=config.password,
-    )
+    ensure = await context.ensure()
     if ensure.get("status") != "success":
         error = ensure.get("error") or "GNS3 server not available"
         steps.append(step_entry("ensure_server", STEP_FAILED, error=error))
         return goal_envelope(goal, "error", steps, error=error)
     steps.append(step_entry("ensure_server", STEP_SUCCESS))
-    client = GNS3APIClient(config)
+    client = await context.client()
 
     try:
         project = await resolve_project(

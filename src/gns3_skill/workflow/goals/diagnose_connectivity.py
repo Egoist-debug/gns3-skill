@@ -1,11 +1,11 @@
-"""gns3_diagnose_connectivity goal implementation."""
+"""Diagnose-connectivity goal implementation."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from gns3_skill.gns3_client import GNS3APIClient, GNS3Config
-from gns3_skill.server_lifecycle import ensure_gns3_server, normalize_server_url
+from gns3_skill.gns3_client import GNS3APIClient
+from gns3_skill.runtime import OperationContext
 from gns3_skill.workflow.console_ops import send_console_commands
 from gns3_skill.workflow.envelopes import (
     STATUS_SUCCESS,
@@ -13,7 +13,6 @@ from gns3_skill.workflow.envelopes import (
     STEP_FAILED,
     STEP_SKIPPED,
     STEP_SUCCESS,
-    error_envelope,
     goal_envelope,
     step_entry,
 )
@@ -24,16 +23,13 @@ from gns3_skill.workflow.topology import validate_topology_snapshot
 
 async def diagnose_connectivity_goal(
     *,
+    context: OperationContext,
     project_name: Optional[str] = None,
     project_id: Optional[str] = None,
     suspect_nodes: Optional[List[Dict[str, Any]]] = None,
     probe_commands: Optional[List[str]] = None,
-    server_url: str = "http://localhost:3080",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
 ) -> Dict[str, Any]:
     goal = "diagnose_connectivity"
-    url = normalize_server_url(server_url)
     suspect_nodes = suspect_nodes or []
     probe_commands = probe_commands or ["show ip interface brief", "show ip route"]
     if not project_id and not (project_name and str(project_name).strip()):
@@ -49,17 +45,14 @@ async def diagnose_connectivity_goal(
     }
 
     async def ensure_step() -> Dict[str, Any]:
-        config = GNS3Config.from_env(server_url=url, username=username, password=password)
-        result = await ensure_gns3_server(
-            config.server_url, username=config.username, password=config.password
-        )
+        result = await context.ensure()
         if result.get("status") != "success":
             return step_entry(
                 "ensure_server",
                 STEP_FAILED,
                 error=result.get("error") or "GNS3 server not available",
             )
-        ctx["client"] = GNS3APIClient(config)
+        ctx["client"] = await context.client()
         return step_entry("ensure_server", STEP_SUCCESS)
 
     async def resolve_project_step() -> Dict[str, Any]:
@@ -158,12 +151,10 @@ async def diagnose_connectivity_goal(
                     )
                 mutated = True
             output = await send_console_commands(
+                context=context,
                 project_id=project_id,
                 node_id=node["node_id"],
                 commands=commands,
-                server_url=url,
-                username=username,
-                password=password,
                 enter_config_mode=False,
                 save_config=False,
                 login_username=spec.get("login_username"),

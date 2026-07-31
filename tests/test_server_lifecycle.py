@@ -6,6 +6,7 @@ import os
 import signal
 import unittest
 from unittest.mock import AsyncMock, MagicMock, patch
+from gns3_skill.gns3_client import GNS3Config
 
 from gns3_skill.server_lifecycle import (
     _parse_ss_pids,
@@ -16,6 +17,9 @@ from gns3_skill.server_lifecycle import (
     normalize_server_url,
     stop_gns3_server,
 )
+from gns3_skill.registry import get_operation
+from gns3_skill.runtime import OperationContext, invoke
+from gns3_skill.operations.session import cleanup_session
 
 
 class LocalUrlTests(unittest.TestCase):
@@ -28,6 +32,56 @@ class LocalUrlTests(unittest.TestCase):
 
     def test_normalize(self):
         self.assertEqual(normalize_server_url("http://localhost:3080/"), "http://localhost:3080")
+
+class ConfigResolutionTests(unittest.TestCase):
+    _local = {
+        "auth": "true",
+        "user": "local-user",
+        "password": "local-password",
+        "host": "127.0.0.1",
+        "port": "3080",
+    }
+
+    def test_operation_context_uses_environment_server_url_when_unsupplied(self):
+        with patch.object(
+            GNS3Config, "from_local_server_conf", return_value=self._local
+        ), patch.dict(
+            os.environ,
+            {
+                "GNS3_SERVER_URL": "http://192.0.2.10:3080",
+                "GNS3_USERNAME": "",
+                "GNS3_PASSWORD": "",
+            },
+        ):
+            context = OperationContext()
+
+        self.assertEqual(context.server_url, "http://192.0.2.10:3080")
+        self.assertIsNone(context.username)
+        self.assertIsNone(context.password)
+
+    def test_remote_url_never_inherits_local_config_credentials(self):
+        with patch.object(
+            GNS3Config, "from_local_server_conf", return_value=self._local
+        ), patch.dict(
+            os.environ,
+            {"GNS3_USERNAME": "", "GNS3_PASSWORD": ""},
+        ):
+            config = GNS3Config.from_env(server_url="http://192.0.2.20:3080")
+
+        self.assertIsNone(config.username)
+        self.assertIsNone(config.password)
+
+    def test_loopback_url_may_use_local_config_credentials(self):
+        with patch.object(
+            GNS3Config, "from_local_server_conf", return_value=self._local
+        ), patch.dict(
+            os.environ,
+            {"GNS3_USERNAME": "", "GNS3_PASSWORD": ""},
+        ):
+            config = GNS3Config.from_env(server_url="http://127.0.0.1:3080")
+
+        self.assertEqual(config.username, "local-user")
+        self.assertEqual(config.password, "local-password")
 
 
 class BuildStartCommandTests(unittest.TestCase):
@@ -122,42 +176,52 @@ class EnsureServerTests(unittest.IsolatedAsyncioTestCase):
             self.assertFalse(result["already_running"])
             spawn.assert_awaited_once()
 
-    async def test_http_401_is_auth_error_not_healthy(self):
-        # Pre-2.1 behavior: a reachable server returning 401 was cached as
-        # "success" with a 401 body, causing agents to loop retries with no
-        # password hint. The new contract: 401/403 from probe_server is an
-        # auth error (ok=False), and ensure_gns3_server surfaces a credential
-        # hint instead of starting / caching. See references/setup.md
-        # "Finding local server credentials".
-        with patch(
-            "gns3_skill.server_lifecycle.probe_server",
-            new=AsyncMock(
-                return_value=(False, {
-                    "reachable": True,
-                    "http_status": 401,
-                    "detail": "",
-                    "error": (
-                        "GNS3 API authentication required (HTTP 401). Set "
-                        "GNS3_USERNAME / GNS3_PASSWORD from the local server "
-                        "config before retrying — see references/setup.md "
-                        "\"Finding local server credentials\" (Linux: "
-                        "~/.config/GNS3/2.2/gns3_server.conf under [Server]). "
-                        "Do not guess passwords."
-                    ),
-                })
-            ),
-        ), patch(
-            "gns3_skill.server_lifecycle._spawn_server",
-            new=AsyncMock(),
-        ) as spawn:
-            result = await ensure_gns3_server("http://127.0.0.1:3080", force=True)
-            self.assertEqual(result["status"], "error")
-            self.assertTrue(result["already_running"])
-            self.assertEqual(result.get("http_status"), 401)
-            self.assertIn("GNS3_USERNAME", result["error"])
-            self.assertIn("GNS3_PASSWORD", result["error"])
-            self.assertIn("gns3_server.conf", result["error"])
-            spawn.assert_not_called()
+    async def test_http_auth_failures_are_classified_with_status(self):
+        # A reachable 401/403 is an authentication failure, never a healthy
+        # probe and never a reason to start another local server process.
+        operation = get_operation("ensure_server")
+        self.assertIsNotNone(operation)
+        assert operation is not None
+
+        for server_url in (
+            "http://127.0.0.1:3080",
+            "http://10.0.0.5:3080",
+        ):
+            for http_status in (401, 403):
+                with self.subTest(server_url=server_url, http_status=http_status):
+                    clear_healthy_cache()
+                    detail = {
+                        "reachable": True,
+                        "http_status": http_status,
+                        "detail": "",
+                        "error": (
+                            f"GNS3 API authentication required (HTTP {http_status}). "
+                            "Use the configured credentials; do not guess passwords."
+                        ),
+                    }
+                    with patch(
+                        "gns3_skill.server_lifecycle.probe_server",
+                        new=AsyncMock(return_value=(False, detail)),
+                    ), patch(
+                        "gns3_skill.server_lifecycle._spawn_server",
+                        new=AsyncMock(),
+                    ) as spawn:
+                        outcome = await invoke(
+                            operation,
+                            {
+                                "server_url": server_url,
+                                "force": True,
+                            },
+                        )
+
+                    envelope = outcome.to_dict(operation.identifier, operation.tier)
+                    self.assertEqual(envelope["status"], "error")
+                    self.assertEqual(envelope["error"]["type"], "auth")
+                    self.assertEqual(
+                        envelope["error"]["details"]["http_status"], http_status
+                    )
+                    self.assertNotIn("result", envelope)
+                    spawn.assert_not_called()
 
 
 class ParseSsPidsTests(unittest.TestCase):
@@ -292,19 +356,27 @@ class StopServerTests(unittest.IsolatedAsyncioTestCase):
 
 
 class CleanupSessionTests(unittest.IsolatedAsyncioTestCase):
-    async def test_all_flags_false_success(self):
-        from gns3_skill.server import gns3_cleanup_session
+    @staticmethod
+    def _context(client=None):
+        context = MagicMock(
+            server_url="http://localhost:3080", username=None, password=None
+        )
+        context.client = AsyncMock(return_value=client)
+        return context
 
-        result = await gns3_cleanup_session()
+    async def test_all_flags_false_success(self):
+        context = self._context()
+        result = await cleanup_session(context=context)
+
         self.assertEqual(result["status"], "success")
         self.assertEqual(len(result["steps"]), 3)
         self.assertTrue(all(s["status"] == "skipped" for s in result["steps"]))
+        context.client.assert_not_awaited()
 
     async def test_missing_project_id_skipped(self):
-        from gns3_skill.server import gns3_cleanup_session
-
+        context = self._context()
         with patch(
-            "gns3_skill.server.stop_gns3_server",
+            "gns3_skill.operations.session.stop_gns3_server",
             new=AsyncMock(
                 return_value={
                     "status": "success",
@@ -317,27 +389,28 @@ class CleanupSessionTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ) as stop:
-            result = await gns3_cleanup_session(
-                stop_nodes=True, close_project=True, stop_server=True
+            result = await cleanup_session(
+                context=context,
+                stop_nodes=True,
+                close_project=True,
+                stop_server=True,
             )
-            self.assertEqual(result["status"], "success")
-            by_step = {s["step"]: s for s in result["steps"]}
-            self.assertEqual(by_step["stop_nodes"]["status"], "skipped")
-            self.assertEqual(by_step["close_project"]["status"], "skipped")
-            self.assertEqual(by_step["stop_server"]["status"], "success")
-            stop.assert_awaited_once()
+
+        self.assertEqual(result["status"], "partial")
+        by_step = {s["step"]: s for s in result["steps"]}
+        self.assertEqual(by_step["stop_nodes"]["status"], "error")
+        self.assertEqual(by_step["close_project"]["status"], "error")
+        self.assertEqual(by_step["stop_server"]["status"], "success")
+        stop.assert_awaited_once()
+        context.client.assert_not_awaited()
 
     async def test_close_fail_still_stops_server(self):
-        from gns3_skill.server import gns3_cleanup_session
-
         mock_client = MagicMock()
         mock_client.close_project = AsyncMock(side_effect=RuntimeError("close boom"))
+        context = self._context(mock_client)
 
         with patch(
-            "gns3_skill.server.create_client_ready",
-            new=AsyncMock(return_value=mock_client),
-        ), patch(
-            "gns3_skill.server.stop_gns3_server",
+            "gns3_skill.operations.session.stop_gns3_server",
             new=AsyncMock(
                 return_value={
                     "status": "success",
@@ -350,25 +423,50 @@ class CleanupSessionTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ) as stop:
-            result = await gns3_cleanup_session(
+            result = await cleanup_session(
+                context=context,
                 project_id="proj-1",
                 close_project=True,
                 stop_server=True,
             )
-            self.assertEqual(result["status"], "partial")
-            by_step = {s["step"]: s for s in result["steps"]}
-            self.assertEqual(by_step["close_project"]["status"], "error")
-            self.assertEqual(by_step["stop_server"]["status"], "success")
-            stop.assert_awaited_once()
+
+        self.assertEqual(result["status"], "partial")
+        by_step = {s["step"]: s for s in result["steps"]}
+        self.assertEqual(by_step["close_project"]["status"], "error")
+        self.assertEqual(by_step["stop_server"]["status"], "success")
+        stop.assert_awaited_once()
+
+    async def test_partial_node_stop_is_reported_as_partial(self):
+        mock_client = MagicMock()
+        mock_client.get_project_nodes = AsyncMock(
+            return_value=[
+                {"node_id": "n1", "name": "R1"},
+                {"node_id": "n2", "name": "R2"},
+            ]
+        )
+        mock_client.stop_node = AsyncMock(
+            side_effect=[None, RuntimeError("stop failed")]
+        )
+        context = self._context(mock_client)
+
+        result = await cleanup_session(
+            context=context,
+            project_id="proj-1",
+            stop_nodes=True,
+        )
+
+        self.assertEqual(result["status"], "partial")
+        stop_step = next(
+            step for step in result["steps"] if step["step"] == "stop_nodes"
+        )
+        self.assertTrue(stop_step["mutated"])
+        self.assertEqual(len(stop_step["stopped_nodes"]), 1)
+        self.assertEqual(len(stop_step["failed_nodes"]), 1)
 
     async def test_stop_only_does_not_ensure(self):
-        from gns3_skill.server import gns3_cleanup_session
-
+        context = self._context()
         with patch(
-            "gns3_skill.server.create_client_ready",
-            new=AsyncMock(),
-        ) as ready, patch(
-            "gns3_skill.server.stop_gns3_server",
+            "gns3_skill.operations.session.stop_gns3_server",
             new=AsyncMock(
                 return_value={
                     "status": "success",
@@ -381,9 +479,10 @@ class CleanupSessionTests(unittest.IsolatedAsyncioTestCase):
                 }
             ),
         ):
-            result = await gns3_cleanup_session(stop_server=True)
-            self.assertEqual(result["status"], "success")
-            ready.assert_not_called()
+            result = await cleanup_session(context=context, stop_server=True)
+
+        self.assertEqual(result["status"], "success")
+        context.client.assert_not_awaited()
 
 
 if __name__ == "__main__":

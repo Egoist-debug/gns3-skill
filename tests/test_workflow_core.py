@@ -14,18 +14,13 @@ from gns3_skill.workflow.confirm import (
     reset_tokens_for_tests,
     target_hash,
 )
-from gns3_skill.workflow.envelopes import (
-    STATUS_CONFIRMATION_REQUIRED,
-    STATUS_CONFLICT,
-    STATUS_ERROR,
-    STATUS_PARTIAL,
-    STATUS_SUCCESS,
-    confirmation_required_envelope,
-    conflict_envelope,
-    error_envelope,
-    goal_envelope,
-    step_entry,
+from gns3_skill.contracts import (
+    OperationError,
+    OperationOutcome,
+    OperationStatus,
+    OperationTier,
 )
+from gns3_skill.workflow.envelopes import step_entry
 from gns3_skill.workflow.resolve import (
     ResolveConflict,
     ResolveMissing,
@@ -36,44 +31,84 @@ from gns3_skill.workflow.resolve import (
     unordered_link_key,
 )
 from gns3_skill.workflow.runner import Step, run_steps
+from gns3_skill.runtime import normalize_outcome
 
 
 class EnvelopeTests(unittest.TestCase):
-    def test_goal_envelope_shape(self):
-        env = goal_envelope(
-            "prepare_lab",
-            STATUS_SUCCESS,
-            [step_entry("ensure_server", "success")],
-            result={"project_id": "p1"},
-        )
-        self.assertEqual(env["status"], STATUS_SUCCESS)
-        self.assertEqual(env["goal"], "prepare_lab")
-        self.assertEqual(len(env["steps"]), 1)
-        self.assertEqual(env["result"]["project_id"], "p1")
-        self.assertIsNone(env["error"])
+    def test_success_envelope_nests_goal_steps_under_result(self):
+        env = OperationOutcome(
+            status=OperationStatus.SUCCESS,
+            result={
+                "steps": [step_entry("ensure_server", "success")],
+                "project_id": "p1",
+            },
+        ).to_dict("prepare_lab", OperationTier.GOAL)
 
-    def test_error_and_conflict_and_confirm(self):
-        err = error_envelope("x", "boom")
-        self.assertEqual(err["status"], STATUS_ERROR)
-        conf = conflict_envelope(
-            "x",
-            [],
-            existing={"name": "a"},
-            expected={"name": "a", "template_id": "t2"},
-            message="conflict",
+        self.assertEqual(
+            set(env), {"status", "operation", "tier", "result"}
         )
-        self.assertEqual(conf["status"], STATUS_CONFLICT)
-        tok = confirmation_required_envelope(
-            "finish_lab",
-            [],
-            action="finish_lab",
-            target={"stop_server": True},
-            impact={"stop_server": True},
-            confirmation_token="abc",
-            expires_at=1.0,
+        self.assertEqual(env["status"], "success")
+        self.assertEqual(env["operation"], "prepare_lab")
+        self.assertEqual(env["tier"], "goal")
+        self.assertEqual(env["result"]["project_id"], "p1")
+        self.assertEqual(len(env["result"]["steps"]), 1)
+        self.assertNotIn("goal", env)
+        self.assertNotIn("error", env)
+
+    def test_error_envelope_is_structured_and_exclusive(self):
+        env = OperationOutcome(
+            status=OperationStatus.ERROR,
+            error=OperationError(
+                error_type="auth",
+                message="authentication required",
+                details={"http_status": 401},
+            ),
+        ).to_dict("ensure_server", OperationTier.EXPERT)
+
+        self.assertEqual(
+            set(env), {"status", "operation", "tier", "error"}
         )
-        self.assertEqual(tok["status"], STATUS_CONFIRMATION_REQUIRED)
-        self.assertEqual(tok["result"]["confirmation_token"], "abc")
+        self.assertEqual(env["error"]["type"], "auth")
+        self.assertEqual(env["error"]["details"]["http_status"], 401)
+        self.assertNotIn("result", env)
+
+    def test_conflict_and_confirmation_are_result_outcomes(self):
+        conflict = OperationOutcome(
+            status=OperationStatus.CONFLICT,
+            result={"existing": {"name": "a"}, "expected": {"name": "b"}},
+        ).to_dict("build_topology", OperationTier.GOAL)
+        confirmation = OperationOutcome(
+            status=OperationStatus.CONFIRMATION_REQUIRED,
+            result={"confirmation_token": "abc", "expires_at": 1.0},
+        ).to_dict("finish_lab", OperationTier.GOAL)
+
+        self.assertEqual(conflict["status"], "conflict")
+        self.assertIn("result", conflict)
+        self.assertNotIn("error", conflict)
+        self.assertEqual(confirmation["status"], "confirmation_required")
+        self.assertEqual(confirmation["result"]["confirmation_token"], "abc")
+        self.assertNotIn("error", confirmation)
+
+    def test_legacy_goal_payload_is_normalized_without_old_public_fields(self):
+        outcome = normalize_outcome(
+            {
+                "status": "partial",
+                "goal": "configure_devices",
+                "steps": [step_entry("configure", "failed", error="incomplete")],
+                "result": {"configured": []},
+                "error": "configuration did not complete",
+                "next": "inspect console readiness",
+            }
+        )
+        env = outcome.to_dict("configure_devices", OperationTier.GOAL)
+
+        self.assertEqual(env["status"], "partial")
+        self.assertEqual(env["result"]["configured"], [])
+        self.assertEqual(env["result"]["steps"][0]["status"], "failed")
+        self.assertEqual(env["result"]["next"], "inspect console readiness")
+        self.assertIn("did not complete", env["result"]["message"])
+        self.assertNotIn("goal", env["result"])
+        self.assertNotIn("error", env)
 
 
 class RunnerTests(unittest.IsolatedAsyncioTestCase):
@@ -85,7 +120,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
             return step_entry("b", "changed")
 
         result = await run_steps([Step("a", s1), Step("b", s2)])
-        self.assertEqual(result.status, STATUS_SUCCESS)
+        self.assertEqual(result.status, OperationStatus.SUCCESS)
         self.assertEqual([s["step"] for s in result.steps], ["a", "b"])
 
     async def test_fail_stop_partial(self):
@@ -101,7 +136,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
         result = await run_steps(
             [Step("a", s1), Step("b", s2), Step("c", s3)]
         )
-        self.assertEqual(result.status, STATUS_PARTIAL)
+        self.assertEqual(result.status, OperationStatus.PARTIAL)
         self.assertEqual(result.stopped_at, "b")
         self.assertEqual(len(result.steps), 2)
         self.assertNotIn("c", [s["step"] for s in result.steps])
@@ -111,7 +146,7 @@ class RunnerTests(unittest.IsolatedAsyncioTestCase):
             raise RuntimeError("down")
 
         result = await run_steps([Step("a", s1)])
-        self.assertEqual(result.status, STATUS_ERROR)
+        self.assertEqual(result.status, OperationStatus.ERROR)
         self.assertIn("down", result.error or "")
 
 

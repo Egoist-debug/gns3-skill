@@ -1,11 +1,11 @@
-"""gns3_build_topology goal implementation."""
+"""Build-topology goal implementation."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional, Tuple
 
-from gns3_skill.gns3_client import GNS3APIClient, GNS3Config
-from gns3_skill.server_lifecycle import ensure_gns3_server, normalize_server_url
+from gns3_skill.gns3_client import GNS3APIClient
+from gns3_skill.runtime import OperationContext
 from gns3_skill.workflow.envelopes import (
     STATUS_SUCCESS,
     STEP_CHANGED,
@@ -45,18 +45,16 @@ def _endpoint_spec(end: Dict[str, Any]) -> Tuple[str, Optional[int], Optional[in
 
 async def build_topology_goal(
     *,
+    context: OperationContext,
     project_name: Optional[str] = None,
     project_id: Optional[str] = None,
     nodes: Optional[List[Dict[str, Any]]] = None,
     links: Optional[List[Dict[str, Any]]] = None,
     start: bool = False,
     validate: bool = True,
-    server_url: str = "http://localhost:3080",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
 ) -> Dict[str, Any]:
     goal = "build_topology"
-    url = normalize_server_url(server_url)
+    url = context.server_url
     nodes = nodes or []
     links = links or []
     node_names = [(spec.get("name") or "").strip() for spec in nodes]
@@ -90,14 +88,7 @@ async def build_topology_goal(
     }
 
     async def ensure_step() -> Dict[str, Any]:
-        config = GNS3Config.from_env(
-            server_url=url, username=username, password=password
-        )
-        result = await ensure_gns3_server(
-            config.server_url,
-            username=config.username,
-            password=config.password,
-        )
+        result = await context.ensure()
         if result.get("status") != "success":
             return step_entry(
                 "ensure_server",
@@ -105,7 +96,7 @@ async def build_topology_goal(
                 detail=result,
                 error=result.get("error") or "GNS3 server not available",
             )
-        ctx["client"] = GNS3APIClient(config)
+        ctx["client"] = await context.client()
         return step_entry("ensure_server", STEP_SUCCESS, detail={"server_url": url})
 
     async def resolve_project_step() -> Dict[str, Any]:

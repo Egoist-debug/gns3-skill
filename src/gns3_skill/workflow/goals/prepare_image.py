@@ -1,12 +1,12 @@
-"""gns3_prepare_image goal implementation."""
+"""Prepare-image goal implementation."""
 
 from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from gns3_skill.gns3_client import GNS3APIClient, GNS3Config
-from gns3_skill.server_lifecycle import ensure_gns3_server, normalize_server_url
+from gns3_skill.gns3_client import GNS3APIClient
+from gns3_skill.runtime import OperationContext
 from gns3_skill.workflow.envelopes import (
     STATUS_SUCCESS,
     STEP_CHANGED,
@@ -23,6 +23,7 @@ from gns3_skill.workflow.runner import Step, run_steps
 
 async def prepare_image_goal(
     *,
+    context: OperationContext,
     source_path: Optional[str] = None,
     emulator: str = "qemu",
     filename: Optional[str] = None,
@@ -32,12 +33,8 @@ async def prepare_image_goal(
     idle_pc_node_name: Optional[str] = None,
     idle_pc_node_id: Optional[str] = None,
     densify_template: bool = False,
-    server_url: str = "http://localhost:3080",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
 ) -> Dict[str, Any]:
     goal = "prepare_image"
-    url = normalize_server_url(server_url)
     emu = (emulator or "").lower()
     if emu == "docker":
         return error_envelope(
@@ -64,17 +61,14 @@ async def prepare_image_goal(
     }
 
     async def ensure_step() -> Dict[str, Any]:
-        config = GNS3Config.from_env(server_url=url, username=username, password=password)
-        result = await ensure_gns3_server(
-            config.server_url, username=config.username, password=config.password
-        )
+        result = await context.ensure()
         if result.get("status") != "success":
             return step_entry(
                 "ensure_server",
                 STEP_FAILED,
                 error=result.get("error") or "GNS3 server not available",
             )
-        ctx["client"] = GNS3APIClient(config)
+        ctx["client"] = await context.client()
         return step_entry("ensure_server", STEP_SUCCESS)
 
     async def import_step() -> Dict[str, Any]:

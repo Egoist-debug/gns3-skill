@@ -1,16 +1,12 @@
-"""gns3_finish_lab goal implementation."""
+"""Finish-lab goal implementation."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-from gns3_skill.gns3_client import GNS3APIClient, GNS3Config
-from gns3_skill.server_lifecycle import (
-    ensure_gns3_server,
-    is_local_server_url,
-    normalize_server_url,
-    stop_gns3_server,
-)
+from gns3_skill.gns3_client import GNS3APIClient
+from gns3_skill.runtime import OperationContext
+from gns3_skill.server_lifecycle import is_local_server_url, stop_gns3_server
 from gns3_skill.workflow.confirm import consume_token, issue_token
 from gns3_skill.workflow.envelopes import (
     STATUS_PARTIAL,
@@ -20,28 +16,24 @@ from gns3_skill.workflow.envelopes import (
     STEP_SKIPPED,
     STEP_SUCCESS,
     confirmation_required_envelope,
-    error_envelope,
     goal_envelope,
     step_entry,
 )
 from gns3_skill.workflow.resolve import ResolveAmbiguous, ResolveMissing, resolve_project
-from gns3_skill.workflow.runner import Step, run_steps
 
 
 async def finish_lab_goal(
     *,
+    context: OperationContext,
     project_name: Optional[str] = None,
     project_id: Optional[str] = None,
     stop_nodes: bool = False,
     close_project: bool = False,
     stop_server: bool = False,
     confirmation_token: Optional[str] = None,
-    server_url: str = "http://localhost:3080",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
 ) -> Dict[str, Any]:
     goal = "finish_lab"
-    url = normalize_server_url(server_url)
+    url = context.server_url
     destructive = bool(stop_nodes or close_project or stop_server)
 
     if not destructive:
@@ -74,20 +66,13 @@ async def finish_lab_goal(
     needs_project = stop_nodes or close_project
 
     if needs_project:
-        config = GNS3Config.from_env(
-            server_url=url, username=username, password=password
-        )
-        ensure = await ensure_gns3_server(
-            config.server_url,
-            username=config.username,
-            password=config.password,
-        )
+        ensure = await context.ensure()
         if ensure.get("status") != "success":
             error = ensure.get("error") or "server unavailable"
             steps.append(step_entry("ensure_server", STEP_FAILED, error=error))
             return goal_envelope(goal, "error", steps, error=error)
         steps.append(step_entry("ensure_server", STEP_SUCCESS))
-        client = GNS3APIClient(config)
+        client = await context.client()
         try:
             project = await resolve_project(
                 client, project_id=project_id, project_name=project_name

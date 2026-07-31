@@ -1,229 +1,174 @@
-"""GNS3 skill CLI — thin dispatcher over tool functions.
-
-Usage:
-  gns3 list
-  gns3 <tool_name> [--arg=value | --json '{...}' | raw JSON on stdin]
-"""
+"""JSON-only registry runner for GNS3 skill operations."""
 from __future__ import annotations
 
-import argparse
 import asyncio
-import inspect
 import json
 import os
 import sys
-from typing import Any, Callable, Dict, Mapping, Optional, Sequence, get_args, get_origin, get_type_hints
+from typing import Dict, List, Optional, Sequence, Tuple
+
+from .contracts import OperationError, OperationOutcome
+from .registry import describe_operation, get_operation, list_operations
+from .runtime import build_inputs, exit_code, invoke, parse_json_object, usage_error
 
 
-def _load_tools() -> Dict[str, Callable[..., Any]]:
-    """Discover gns3_* coroutine callables from the tools module."""
-    import gns3_skill.server as server
-
-    tools: Dict[str, Callable[..., Any]] = {}
-    for name, obj in vars(server).items():
-        if not name.startswith("gns3_"):
-            continue
-        if inspect.iscoroutinefunction(obj):
-            tools[name] = obj
-        elif callable(obj) and inspect.iscoroutinefunction(inspect.unwrap(obj)):
-            tools[name] = inspect.unwrap(obj)
-    return dict(sorted(tools.items()))
+def _emit(payload: object) -> None:
+    print(json.dumps(payload, ensure_ascii=False, indent=2, allow_nan=False))
 
 
-def _parse_bool(raw: str) -> bool:
-    v = raw.strip().lower()
-    if v in {"1", "true", "t", "yes", "y", "on"}:
-        return True
-    if v in {"0", "false", "f", "no", "n", "off"}:
-        return False
-    raise argparse.ArgumentTypeError(f"expected bool, got {raw!r}")
+def _fail(
+    operation: Optional[str],
+    message: str,
+    details: Optional[Dict[str, object]] = None,
+    *,
+    tier: Optional[str] = None,
+) -> int:
+    _emit(usage_error(operation, message, details, tier=tier))
+    return 2
 
 
-def _coerce(value: str, annotation: Any) -> Any:
-    origin = get_origin(annotation)
-    args = get_args(annotation)
+def _list_command(arguments: List[str]) -> int:
+    tier = "goal"
+    seen_tier = False
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument.startswith("--tier="):
+            if seen_tier:
+                return _fail(None, "--tier may be supplied only once")
+            tier = argument.split("=", 1)[1]
+            seen_tier = True
+        elif argument == "--tier":
+            if seen_tier or index + 1 >= len(arguments):
+                return _fail(None, "--tier requires one value and may be supplied only once")
+            index += 1
+            tier = arguments[index]
+            seen_tier = True
+        else:
+            return _fail(None, "unexpected list argument", {"argument": argument})
+        index += 1
+    if tier not in {"goal", "expert", "all"}:
+        return _fail(None, "tier must be goal, expert, or all", {"tier": tier})
+    specs = list_operations(tier)
+    _emit({
+        "tier": tier,
+        "operations": [
+            {"identifier": spec.identifier, "tier": spec.tier.value, "summary": spec.summary}
+            for spec in specs
+        ],
+        "total": len(specs),
+    })
+    return 0
 
-    if origin is type(None):
-        return None
-    non_none = [a for a in args if a is not type(None)] if args else []
-    if origin is not None and non_none and type(None) in args:
-        if value.strip().lower() in {"null", "none", ""}:
+
+def _describe_command(arguments: List[str]) -> int:
+    if len(arguments) != 1:
+        return _fail(arguments[0] if arguments else None, "describe requires exactly one operation")
+    identifier = arguments[0]
+    metadata = describe_operation(identifier)
+    if metadata is None:
+        return _fail(identifier, "unknown operation", {"operation": identifier})
+    _emit(metadata)
+    return 0
+
+
+def _parse_run_arguments(arguments: List[str]) -> Tuple[Dict[str, str], Optional[str]]:
+    kv: Dict[str, str] = {}
+    json_raw: Optional[str] = None
+    index = 0
+    while index < len(arguments):
+        argument = arguments[index]
+        if argument == "--json":
+            if json_raw is not None:
+                raise OperationError("usage", "--json may be supplied only once")
+            if index + 1 >= len(arguments):
+                raise OperationError("usage", "--json requires a JSON object")
+            index += 1
+            json_raw = arguments[index]
+        elif argument.startswith("--json="):
+            if json_raw is not None:
+                raise OperationError("usage", "--json may be supplied only once")
+            json_raw = argument.split("=", 1)[1]
+        elif argument.startswith("--") and "=" in argument:
+            key, value = argument[2:].split("=", 1)
+            if not key:
+                raise OperationError("usage", "parameter name may not be empty")
+            if key in kv:
+                raise OperationError(
+                    "usage", "duplicate --key=value parameter", {"parameter": key}
+                )
+            kv[key] = value
+        elif argument.startswith("--"):
+            raise OperationError(
+                "usage",
+                "operation parameters must use --key=value form",
+                {"parameter": argument[2:]},
+            )
+        else:
+            raise OperationError("usage", "unexpected run argument", {"argument": argument})
+        index += 1
+    return kv, json_raw
+
+
+def _stdin_json() -> Optional[str]:
+    try:
+        if sys.stdin.isatty():
             return None
-        return _coerce(value, non_none[0])
+        raw = sys.stdin.read().strip()
+    except (OSError, AttributeError):
+        return None
+    return raw or None
 
-    if annotation is inspect.Parameter.empty or annotation is Any:
-        try:
-            return json.loads(value)
-        except json.JSONDecodeError:
-            return value
 
-    if annotation is bool:
-        return _parse_bool(value)
-    if annotation is int:
-        return int(value)
-    if annotation is float:
-        return float(value)
-    if annotation is str:
-        return value
-
-    if origin in (list, dict):
-        return json.loads(value)
+def _run_command(arguments: List[str]) -> int:
+    if not arguments:
+        return _fail(None, "run requires exactly one operation")
+    identifier = arguments[0]
+    spec = get_operation(identifier)
+    if spec is None:
+        return _fail(identifier, "unknown operation", {"operation": identifier})
 
     try:
-        return json.loads(value)
-    except json.JSONDecodeError:
-        return value
+        kv, json_raw = _parse_run_arguments(arguments[1:])
+        stdin_raw = _stdin_json()
+        if json_raw is not None and stdin_raw is not None:
+            raise OperationError(
+                "usage", "--json and stdin JSON are mutually exclusive",
+                {"sources": ["--json", "stdin"]},
+            )
+        body = None
+        if json_raw is not None:
+            body = parse_json_object(json_raw, source="--json")
+        elif stdin_raw is not None:
+            body = parse_json_object(stdin_raw, source="stdin")
+        inputs = build_inputs(spec, kv, body)
+    except OperationError as exc:
+        _emit(usage_error(identifier, exc.message, exc.details, tier=spec.tier.value))
+        return 2
 
-
-def _build_kwargs(
-    fn: Callable[..., Any],
-    kv: Mapping[str, str],
-    json_body: Optional[Dict[str, Any]],
-) -> Dict[str, Any]:
-    sig = inspect.signature(fn)
     try:
-        hints = get_type_hints(fn)
-    except Exception:
-        hints = {}
-
-    kwargs: Dict[str, Any] = {}
-    if json_body:
-        for k, v in json_body.items():
-            if k in sig.parameters:
-                kwargs[k] = v
-
-    for k, raw in kv.items():
-        if k not in sig.parameters:
-            raise SystemExit(f"unknown argument --{k} for this tool")
-        ann = hints.get(k, sig.parameters[k].annotation)
-        kwargs[k] = _coerce(raw, ann)
-
-    return kwargs
-
-
-def _read_json_arg(raw: Optional[str]) -> Optional[Dict[str, Any]]:
-    if raw is None:
-        return None
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise SystemExit("--json must be a JSON object")
-    return data
-
-
-def _read_stdin_json() -> Optional[Dict[str, Any]]:
-    if sys.stdin.isatty():
-        return None
-    raw = sys.stdin.read().strip()
-    if not raw:
-        return None
-    data = json.loads(raw)
-    if not isinstance(data, dict):
-        raise SystemExit("stdin JSON must be an object")
-    return data
-
-
-async def _invoke(fn: Callable[..., Any], kwargs: Dict[str, Any]) -> Any:
-    return await fn(**kwargs)
+        outcome = asyncio.run(invoke(spec, inputs))
+    except KeyboardInterrupt:
+        outcome = OperationOutcome.failure(
+            OperationError("interrupted", "operation interrupted")
+        )
+    _emit(outcome.to_dict(spec.identifier, spec.tier))
+    return exit_code(outcome)
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    """CLI entry. Returns process exit code."""
-    parser = argparse.ArgumentParser(
-        prog="gns3",
-        description="GNS3 skill CLI. Dispatches to gns3_skill tool functions.",
-    )
-    parser.add_argument(
-        "tool",
-        nargs="?",
-        help="Tool name (e.g. gns3_prepare_lab). Use 'list' to show tools.",
-    )
-    parser.add_argument(
-        "--json",
-        dest="json_args",
-        default=None,
-        help="JSON object of arguments",
-    )
-    parser.add_argument(
-        "--pretty",
-        action="store_true",
-        default=True,
-        help="Pretty-print JSON result (default)",
-    )
-    parser.add_argument(
-        "--compact",
-        action="store_true",
-        help="Compact JSON output",
-    )
-    args, unknown = parser.parse_known_args(list(argv) if argv is not None else None)
-
-    if not args.tool or args.tool in {"list", "help"}:
-        tools = _load_tools()
-        print("Available tools:")
-        for name in tools:
-            print(f"  {name}")
-        print(f"\nTotal: {len(tools)}")
-        print("\nInvoke: gns3 <tool> [--key=value ...] [--json '{...}']")
-        return 0
-
-    tool_name = args.tool
-    if not tool_name.startswith("gns3_"):
-        tool_name = f"gns3_{tool_name}"
-
-    tools = _load_tools()
-    if tool_name not in tools:
-        print(
-            f"unknown tool: {args.tool!r}. Run `gns3 list` for names.",
-            file=sys.stderr,
-        )
-        return 2
-
-    fn = tools[tool_name]
-
-    kv: Dict[str, str] = {}
-    for item in unknown:
-        if item.startswith("--") and "=" in item:
-            key, val = item[2:].split("=", 1)
-            kv[key] = val
-        elif item.startswith("--"):
-            print(f"use --{item[2:]}=value form (got {item!r})", file=sys.stderr)
-            return 2
-        else:
-            print(f"unexpected argument: {item!r}", file=sys.stderr)
-            return 2
-
-    try:
-        json_body = _read_json_arg(args.json_args)
-        stdin_body = _read_stdin_json()
-        if json_body and stdin_body:
-            print("provide either --json or stdin JSON, not both", file=sys.stderr)
-            return 2
-        body = json_body or stdin_body
-        kwargs = _build_kwargs(fn, kv, body)
-    except SystemExit as exc:
-        msg = exc.code if isinstance(exc.code, str) else str(exc)
-        print(msg, file=sys.stderr)
-        return 2
-    except Exception as e:
-        print(f"argument error: {e}", file=sys.stderr)
-        return 2
-
-    try:
-        result = asyncio.run(_invoke(fn, kwargs))
-    except KeyboardInterrupt:
-        return 130
-    except Exception as e:
-        err = {"status": "error", "tool": tool_name, "error": str(e)}
-        print(
-            json.dumps(err, indent=None if args.compact else 2, default=str),
-            file=sys.stderr,
-        )
-        return 1
-
-    indent = None if args.compact else 2
-    print(json.dumps(result, indent=indent, default=str, ensure_ascii=False))
-    if isinstance(result, dict) and result.get("status") in {"error", "failed"}:
-        return 1
-    return 0
+    """Dispatch only the approved list, describe, and run commands."""
+    arguments = list(argv) if argv is not None else list(sys.argv[1:])
+    if not arguments:
+        return _fail(None, "command must be list, describe, or run")
+    command, rest = arguments[0], arguments[1:]
+    if command == "list":
+        return _list_command(rest)
+    if command == "describe":
+        return _describe_command(rest)
+    if command == "run":
+        return _run_command(rest)
+    return _fail(command, "unknown command; expected list, describe, or run", {"command": command})
 
 
 if __name__ == "__main__":

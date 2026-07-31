@@ -436,15 +436,11 @@ async def ensure_gns3_server(
 ) -> Dict[str, Any]:
     """Ensure GNS3 REST API is reachable; auto-start on localhost if needed.
 
-    Returns a structured dict suitable for the ``gns3_ensure_server`` tool.
+    Returns a structured dict for runtime outcome normalization.
     """
     url = normalize_server_url(server_url)
-    # When credentials aren't passed explicitly, fall back to the local
-    # ``gns3_server.conf`` first (default), then ``GNS3_USERNAME`` /
-    # ``GNS3_PASSWORD`` env overrides. This makes `gns3_ensure_server`
-    # work out of the box for a normal local install with auth enabled — no
-    # env ritual, no guessing. See references/setup.md "Finding local server
-    # credentials". Reuses GNS3Config.from_env resolution order.
+    # Reuse GNS3Config's explicit > environment > local-config resolution.
+    # Local configuration credentials are eligible only for loopback URLs.
     if username is None or password is None:
         _resolved_cfg = GNS3Config.from_env(server_url=url, username=username, password=password)
         if username is None:
@@ -482,6 +478,22 @@ async def ensure_gns3_server(
             }
 
         if not is_local_server_url(url):
+            if (
+                isinstance(payload, dict)
+                and payload.get("reachable")
+                and payload.get("http_status") in (401, 403)
+            ):
+                return {
+                    "status": "error",
+                    "already_running": True,
+                    "started": False,
+                    "server_url": url,
+                    "server_info": None,
+                    "start_command": None,
+                    "wait_seconds": round(time.monotonic() - t0, 3),
+                    "error": payload.get("error") or "GNS3 API authentication required",
+                    "http_status": payload.get("http_status"),
+                }
             return {
                 "status": "error",
                 "already_running": False,
@@ -515,6 +527,7 @@ async def ensure_gns3_server(
                     "For a remote server pass --username / --password "
                     "(or GNS3_USERNAME / GNS3_PASSWORD). Do not guess passwords."
                 ),
+                "http_status": payload.get("http_status"),
             }
 
         # Before spawning, check if something is already listening on the port.

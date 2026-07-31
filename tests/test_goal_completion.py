@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from typing import Any, Dict, List
+from typing import List
 from unittest.mock import patch
 
 from gns3_skill.workflow.goals.configure_devices import configure_devices_goal
@@ -33,6 +33,17 @@ class FakeClient:
 
         return call
 
+class FakeContext:
+    def __init__(self, client):
+        self.server_url = "http://127.0.0.1:3080"
+        self._client = client
+
+    async def ensure(self, *, force=False):
+        return await _ensure_ok(force=force)
+
+    async def client(self, *, force_ensure=False):
+        return self._client
+
 
 class ConfigureCompletionTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, console_results, target=None):
@@ -46,16 +57,11 @@ class ConfigureCompletionTests(unittest.IsolatedAsyncioTestCase):
             return remaining.pop(0)
 
         with patch(
-            "gns3_skill.workflow.goals.configure_devices.ensure_gns3_server",
-            new=_ensure_ok,
-        ), patch(
-            "gns3_skill.workflow.goals.configure_devices.GNS3APIClient",
-            return_value=client,
-        ), patch(
             "gns3_skill.workflow.goals.configure_devices.send_console_commands",
             new=send_console,
         ):
             result = await configure_devices_goal(
+                context=FakeContext(client),
                 project_id="p1",
                 targets=[
                     target
@@ -125,18 +131,13 @@ class PrepareImageCompletionTests(unittest.IsolatedAsyncioTestCase):
             list_images=list(image_lists),
             upload_image={"filename": "ios.bin", "size_bytes": 10},
         )
-        with patch(
-            "gns3_skill.workflow.goals.prepare_image.ensure_gns3_server",
-            new=_ensure_ok,
-        ), patch(
-            "gns3_skill.workflow.goals.prepare_image.GNS3APIClient",
-            return_value=client,
-        ), patch("gns3_skill.workflow.goals.prepare_image.Path") as path_class:
+        with patch("gns3_skill.workflow.goals.prepare_image.Path") as path_class:
             path = path_class.return_value
             path.is_file.return_value = True
             path.name = "ios.bin"
             path.__str__.return_value = "/tmp/ios.bin"
             result = await prepare_image_goal(
+                context=FakeContext(client),
                 source_path="/tmp/ios.bin",
                 emulator="dynamips",
                 filename="ios.bin",

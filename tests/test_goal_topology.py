@@ -8,8 +8,9 @@ from unittest.mock import patch
 
 from gns3_skill.workflow.goals.build_topology import build_topology_goal
 from gns3_skill.workflow.goals.diagnose_connectivity import diagnose_connectivity_goal
-from gns3_skill.server import gns3_validate_topology
+from gns3_skill.operations.topology import validate_topology
 from gns3_skill.workflow.topology import node_port_keys, validate_topology_snapshot
+from gns3_skill.runtime import normalize_outcome
 
 
 async def _ensure_ok(*_args, **_kwargs):
@@ -99,6 +100,17 @@ class FakeClient:
         self.nodes.append(created)
         return created
 
+class FakeContext:
+    def __init__(self, client):
+        self.server_url = "http://127.0.0.1:3080"
+        self._client = client
+
+    async def ensure(self, *, force=False):
+        return await _ensure_ok(force=force)
+
+    async def client(self, *, force_ensure=False):
+        return self._client
+
 
 class TopologyPureTests(unittest.TestCase):
     def test_port_inventory_and_overlap_validation(self):
@@ -113,16 +125,12 @@ class TopologyPureTests(unittest.TestCase):
 
 class BuildTopologyTests(unittest.IsolatedAsyncioTestCase):
     async def _run(self, client, links, *, validate=False):
-        with patch(
-            "gns3_skill.workflow.goals.build_topology.ensure_gns3_server",
-            new=_ensure_ok,
-        ), patch(
-            "gns3_skill.workflow.goals.build_topology.GNS3APIClient",
-            return_value=client,
-        ):
-            return await build_topology_goal(
-                project_id="p1", links=links, validate=validate
-            )
+        return await build_topology_goal(
+            context=FakeContext(client),
+            project_id="p1",
+            links=links,
+            validate=validate,
+        )
 
     async def test_implicit_link_uses_advertised_ports_and_retry_reuses(self):
         client = FakeClient()
@@ -201,21 +209,15 @@ class BuildTopologyTests(unittest.IsolatedAsyncioTestCase):
     async def test_later_node_conflict_does_not_create_planned_node(self):
         client = FakeClient()
         client.nodes[1]["template_id"] = "existing-template"
-        with patch(
-            "gns3_skill.workflow.goals.build_topology.ensure_gns3_server",
-            new=_ensure_ok,
-        ), patch(
-            "gns3_skill.workflow.goals.build_topology.GNS3APIClient",
-            return_value=client,
-        ):
-            result = await build_topology_goal(
-                project_id="p1",
-                nodes=[
-                    {"name": "R3", "template_id": "new-template"},
-                    {"name": "R2", "template_id": "other-template"},
-                ],
-                validate=False,
-            )
+        result = await build_topology_goal(
+            context=FakeContext(client),
+            project_id="p1",
+            nodes=[
+                {"name": "R3", "template_id": "new-template"},
+                {"name": "R2", "template_id": "other-template"},
+            ],
+            validate=False,
+        )
         self.assertEqual(result["status"], "conflict")
         self.assertNotIn("create_node_from_template", client.calls)
 
@@ -247,24 +249,22 @@ class ExpertTopologyTests(unittest.IsolatedAsyncioTestCase):
     async def test_expert_tool_uses_shared_validation(self):
         client = FakeClient()
         client.nodes[1]["x"] = 0
-        with patch("gns3_skill.server.create_client_ready", return_value=client):
-            result = await gns3_validate_topology(project_id="p1")
+        raw = await validate_topology(
+            context=FakeContext(client), project_id="p1"
+        )
+        result = normalize_outcome(raw).to_dict("validate_topology", "expert")
         self.assertEqual(result["status"], "success")
-        self.assertFalse(result["validation"]["is_valid"])
-        self.assertTrue(result["validation"]["issues"])
+        self.assertFalse(result["result"]["validation"]["is_valid"])
+        self.assertTrue(result["result"]["validation"]["issues"])
+
 
 class DiagnoseTopologyTests(unittest.IsolatedAsyncioTestCase):
     async def test_shared_validation_marks_overlap_invalid(self):
         client = FakeClient()
         client.nodes[1]["x"] = 0
-        with patch(
-            "gns3_skill.workflow.goals.diagnose_connectivity.ensure_gns3_server",
-            new=_ensure_ok,
-        ), patch(
-            "gns3_skill.workflow.goals.diagnose_connectivity.GNS3APIClient",
-            return_value=client,
-        ):
-            result = await diagnose_connectivity_goal(project_id="p1")
+        result = await diagnose_connectivity_goal(
+            context=FakeContext(client), project_id="p1"
+        )
         self.assertEqual(result["status"], "success")
         self.assertFalse(result["result"]["validation"]["is_valid"])
         issue_findings = [
@@ -282,17 +282,13 @@ class DiagnoseTopologyTests(unittest.IsolatedAsyncioTestCase):
             return {"status": "error", "error": "console unavailable"}
 
         with patch(
-            "gns3_skill.workflow.goals.diagnose_connectivity.ensure_gns3_server",
-            new=_ensure_ok,
-        ), patch(
-            "gns3_skill.workflow.goals.diagnose_connectivity.GNS3APIClient",
-            return_value=client,
-        ), patch(
             "gns3_skill.workflow.goals.diagnose_connectivity.send_console_commands",
             new=probe_error,
         ):
             result = await diagnose_connectivity_goal(
-                project_id="p1", suspect_nodes=[{"node_name": "R1"}]
+                context=FakeContext(client),
+                project_id="p1",
+                suspect_nodes=[{"node_name": "R1"}],
             )
         self.assertEqual(result["status"], "partial")
         self.assertIn("start_node", client.calls)

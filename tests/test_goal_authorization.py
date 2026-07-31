@@ -3,8 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from typing import Any, Dict, List
-from unittest.mock import patch
+from typing import List
 
 from gns3_skill.workflow.confirm import reset_tokens_for_tests
 from gns3_skill.workflow.goals.finish_lab import finish_lab_goal
@@ -38,6 +37,17 @@ class FakeClient:
 
         return call
 
+class FakeContext:
+    def __init__(self, client):
+        self.server_url = "http://127.0.0.1:3080"
+        self._client = client
+
+    async def ensure(self, *, force=False):
+        return await _ensure_ok(force=force)
+
+    async def client(self, *, force_ensure=False):
+        return self._client
+
 
 class RunnerStatusTests(unittest.IsolatedAsyncioTestCase):
     async def test_read_success_then_failure_is_error(self):
@@ -67,18 +77,17 @@ class FinishAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             get_project_nodes=[],
             close_project={"ok": True},
         )
-        with patch(
-            "gns3_skill.workflow.goals.finish_lab.ensure_gns3_server", new=_ensure_ok
-        ), patch(
-            "gns3_skill.workflow.goals.finish_lab.GNS3APIClient", return_value=client
-        ):
-            preview = await finish_lab_goal(project_name="lab", close_project=True)
-            token = preview["result"]["confirmation_token"]
-            result = await finish_lab_goal(
-                project_name="lab",
-                close_project=True,
-                confirmation_token=token,
-            )
+        context = FakeContext(client)
+        preview = await finish_lab_goal(
+            context=context, project_name="lab", close_project=True
+        )
+        token = preview["result"]["confirmation_token"]
+        result = await finish_lab_goal(
+            context=context,
+            project_name="lab",
+            close_project=True,
+            confirmation_token=token,
+        )
         self.assertEqual(result["status"], "error")
         self.assertIn("target mismatch", result["error"])
         self.assertNotIn("close_project", client.calls)
@@ -90,20 +99,20 @@ class FinishAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             stop_node=RuntimeError("stop failed"),
             close_project={"ok": True},
         )
-        with patch(
-            "gns3_skill.workflow.goals.finish_lab.ensure_gns3_server", new=_ensure_ok
-        ), patch(
-            "gns3_skill.workflow.goals.finish_lab.GNS3APIClient", return_value=client
-        ):
-            preview = await finish_lab_goal(
-                project_id="p1", stop_nodes=True, close_project=True
-            )
-            result = await finish_lab_goal(
-                project_id="p1",
-                stop_nodes=True,
-                close_project=True,
-                confirmation_token=preview["result"]["confirmation_token"],
-            )
+        context = FakeContext(client)
+        preview = await finish_lab_goal(
+            context=context,
+            project_id="p1",
+            stop_nodes=True,
+            close_project=True,
+        )
+        result = await finish_lab_goal(
+            context=context,
+            project_id="p1",
+            stop_nodes=True,
+            close_project=True,
+            confirmation_token=preview["result"]["confirmation_token"],
+        )
         self.assertEqual(result["status"], "error")
         self.assertNotIn("close_project", client.calls)
 
@@ -126,20 +135,20 @@ class FinishAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             stop_node=stop_node,
             close_project={"ok": True},
         )
-        with patch(
-            "gns3_skill.workflow.goals.finish_lab.ensure_gns3_server", new=_ensure_ok
-        ), patch(
-            "gns3_skill.workflow.goals.finish_lab.GNS3APIClient", return_value=client
-        ):
-            preview = await finish_lab_goal(
-                project_id="p1", stop_nodes=True, close_project=True
-            )
-            result = await finish_lab_goal(
-                project_id="p1",
-                stop_nodes=True,
-                close_project=True,
-                confirmation_token=preview["result"]["confirmation_token"],
-            )
+        context = FakeContext(client)
+        preview = await finish_lab_goal(
+            context=context,
+            project_id="p1",
+            stop_nodes=True,
+            close_project=True,
+        )
+        result = await finish_lab_goal(
+            context=context,
+            project_id="p1",
+            stop_nodes=True,
+            close_project=True,
+            confirmation_token=preview["result"]["confirmation_token"],
+        )
         self.assertEqual(result["status"], "partial")
         self.assertNotIn("close_project", client.calls)
 
@@ -160,24 +169,20 @@ class SnapshotAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             ],
             delete_snapshot=None,
         )
-        with patch(
-            "gns3_skill.workflow.goals.manage_snapshot.ensure_gns3_server",
-            new=_ensure_ok,
-        ), patch(
-            "gns3_skill.workflow.goals.manage_snapshot.GNS3APIClient",
-            return_value=client,
-        ):
-            preview = await manage_snapshot_goal(
-                operation="delete_snapshot",
-                project_id="p1",
-                snapshot_name="base",
-            )
-            result = await manage_snapshot_goal(
-                operation="delete_snapshot",
-                project_id="p1",
-                snapshot_name="base",
-                confirmation_token=preview["result"]["confirmation_token"],
-            )
+        context = FakeContext(client)
+        preview = await manage_snapshot_goal(
+            context=context,
+            operation="delete_snapshot",
+            project_id="p1",
+            snapshot_name="base",
+        )
+        result = await manage_snapshot_goal(
+            context=context,
+            operation="delete_snapshot",
+            project_id="p1",
+            snapshot_name="base",
+            confirmation_token=preview["result"]["confirmation_token"],
+        )
         self.assertEqual(result["status"], "error")
         self.assertIn("target mismatch", result["error"])
         self.assertNotIn("delete_snapshot", client.calls)
@@ -189,22 +194,20 @@ class SnapshotAuthorizationTests(unittest.IsolatedAsyncioTestCase):
             create_snapshot={"snapshot_id": "safe1", "name": "safety"},
             restore_snapshot=RuntimeError("restore failed"),
         )
-        with patch(
-            "gns3_skill.workflow.goals.manage_snapshot.ensure_gns3_server",
-            new=_ensure_ok,
-        ), patch(
-            "gns3_skill.workflow.goals.manage_snapshot.GNS3APIClient",
-            return_value=client,
-        ):
-            preview = await manage_snapshot_goal(
-                operation="restore", project_id="p1", snapshot_id="s1"
-            )
-            result = await manage_snapshot_goal(
-                operation="restore",
-                project_id="p1",
-                snapshot_id="s1",
-                confirmation_token=preview["result"]["confirmation_token"],
-            )
+        context = FakeContext(client)
+        preview = await manage_snapshot_goal(
+            context=context,
+            operation="restore",
+            project_id="p1",
+            snapshot_id="s1",
+        )
+        result = await manage_snapshot_goal(
+            context=context,
+            operation="restore",
+            project_id="p1",
+            snapshot_id="s1",
+            confirmation_token=preview["result"]["confirmation_token"],
+        )
         self.assertEqual(result["status"], "partial")
         statuses = {step["step"]: step["status"] for step in result["steps"]}
         self.assertEqual(statuses["safety_snapshot"], "changed")

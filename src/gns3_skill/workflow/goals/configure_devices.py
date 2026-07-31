@@ -1,12 +1,12 @@
-"""gns3_configure_devices goal implementation."""
+"""Configure-devices goal implementation."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 from gns3_skill.config_templates import ConfigTemplates
-from gns3_skill.gns3_client import GNS3APIClient, GNS3Config
-from gns3_skill.server_lifecycle import ensure_gns3_server, normalize_server_url
+from gns3_skill.gns3_client import GNS3APIClient
+from gns3_skill.runtime import OperationContext
 from gns3_skill.workflow.console_ops import send_console_commands
 from gns3_skill.workflow.envelopes import (
     STATUS_SUCCESS,
@@ -66,15 +66,12 @@ def _incomplete_commands(
 
 async def configure_devices_goal(
     *,
+    context: OperationContext,
     project_name: Optional[str] = None,
     project_id: Optional[str] = None,
     targets: Optional[List[Dict[str, Any]]] = None,
-    server_url: str = "http://localhost:3080",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
 ) -> Dict[str, Any]:
     goal = "configure_devices"
-    url = normalize_server_url(server_url)
     targets = targets or []
     if not targets:
         return error_envelope(goal, "targets list is required")
@@ -88,10 +85,7 @@ async def configure_devices_goal(
     }
 
     async def ensure_step() -> Dict[str, Any]:
-        config = GNS3Config.from_env(server_url=url, username=username, password=password)
-        result = await ensure_gns3_server(
-            config.server_url, username=config.username, password=config.password
-        )
+        result = await context.ensure()
         if result.get("status") != "success":
             return step_entry(
                 "ensure_server",
@@ -99,7 +93,7 @@ async def configure_devices_goal(
                 error=result.get("error") or "GNS3 server not available",
                 detail=result,
             )
-        ctx["client"] = GNS3APIClient(config)
+        ctx["client"] = await context.client()
         return step_entry("ensure_server", STEP_SUCCESS)
 
     async def resolve_project_step() -> Dict[str, Any]:
@@ -141,7 +135,7 @@ async def configure_devices_goal(
                 )
             except ResolveMissing as exc:
                 return configure_failure(
-                    f"{exc}; call gns3_list_nodes for names",
+                    f"{exc}; run list_nodes to resolve names",
                     {
                         "target_index": idx,
                         "target": {"node_name": node_name, "node_id": node_id},
@@ -177,12 +171,10 @@ async def configure_devices_goal(
                 )
 
             console_result = await send_console_commands(
+                context=context,
                 project_id=pid,
                 node_id=node_id,
                 commands=commands,
-                server_url=url,
-                username=username,
-                password=password,
                 enter_config_mode=bool(target.get("enter_config_mode", True)),
                 save_config=bool(target.get("save_config", False)),
                 enable_password=target.get("enable_password"),
@@ -211,12 +203,10 @@ async def configure_devices_goal(
             verify_result = None
             if verify_commands:
                 verify_result = await send_console_commands(
+                    context=context,
                     project_id=pid,
                     node_id=node_id,
                     commands=verify_commands,
-                    server_url=url,
-                    username=username,
-                    password=password,
                     enter_config_mode=False,
                     save_config=False,
                     login_username=target.get("login_username"),
@@ -274,5 +264,5 @@ async def configure_devices_goal(
         error=result.error,
         next_hint=None
         if result.status == STATUS_SUCCESS
-        else "Resolve node names via gns3_list_nodes and retry failed target",
+        else "Resolve node names with list_nodes and retry the failed target",
     )

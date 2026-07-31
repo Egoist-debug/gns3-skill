@@ -1,13 +1,12 @@
-"""gns3_prepare_lab goal implementation."""
+"""Prepare-lab goal implementation."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, Optional
 
-from gns3_skill.gns3_client import GNS3APIClient, GNS3Config
-from gns3_skill.server_lifecycle import ensure_gns3_server, normalize_server_url
+from gns3_skill.gns3_client import GNS3APIClient
+from gns3_skill.runtime import OperationContext
 from gns3_skill.workflow.envelopes import (
-    STATUS_ERROR,
     STATUS_SUCCESS,
     STEP_CHANGED,
     STEP_FAILED,
@@ -17,35 +16,25 @@ from gns3_skill.workflow.envelopes import (
     goal_envelope,
     step_entry,
 )
-from gns3_skill.workflow.resolve import ResolveMissing, resolve_or_missing_project
+from gns3_skill.workflow.resolve import resolve_or_missing_project
 from gns3_skill.workflow.runner import Step, run_steps
 
 
 async def prepare_lab_goal(
     *,
+    context: OperationContext,
     project_name: Optional[str] = None,
     project_id: Optional[str] = None,
     create_if_missing: bool = True,
     open_project: bool = True,
-    server_url: str = "http://localhost:3080",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
     force_ensure: bool = False,
 ) -> Dict[str, Any]:
     goal = "prepare_lab"
-    url = normalize_server_url(server_url)
+    url = context.server_url
     ctx: Dict[str, Any] = {"client": None, "project": None}
 
     async def ensure_step() -> Dict[str, Any]:
-        config = GNS3Config.from_env(
-            server_url=url, username=username, password=password
-        )
-        result = await ensure_gns3_server(
-            config.server_url,
-            username=config.username,
-            password=config.password,
-            force=force_ensure,
-        )
+        result = await context.ensure(force=force_ensure)
         if result.get("status") != "success":
             return step_entry(
                 "ensure_server",
@@ -53,7 +42,7 @@ async def prepare_lab_goal(
                 detail=result,
                 error=result.get("error") or "GNS3 server not available",
             )
-        ctx["client"] = GNS3APIClient(config)
+        ctx["client"] = await context.client()
         status = STEP_CHANGED if result.get("started") else STEP_SUCCESS
         return step_entry("ensure_server", status, detail={
             "server_url": result.get("server_url") or url,

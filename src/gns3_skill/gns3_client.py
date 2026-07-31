@@ -4,10 +4,12 @@ GNS3 API Client - Comprehensive HTTP client for GNS3 REST API v2.
 Handles all GNS3 server operations with robust error handling.
 """
 
+import ipaddress
 import logging
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Union
+from urllib.parse import urlparse
 
 import httpx
 from pydantic import BaseModel, Field
@@ -20,6 +22,13 @@ def _env_bool(name: str, default: bool = True) -> bool:
     if raw is None:
         return default
     return raw.strip().lower() not in {"0", "false", "no", "off"}
+
+def _is_loopback_url(server_url: str) -> bool:
+    try:
+        host = (urlparse(server_url).hostname or "").rstrip(".").lower()
+        return host == "localhost" or ipaddress.ip_address(host).is_loopback
+    except ValueError:
+        return False
 
 # Candidate locations for the GNS3 local server config. The first readable file
 # wins; we only ever read credentials + host/port from this — never write it,
@@ -111,7 +120,7 @@ class GNS3Config(BaseModel):
         verify_ssl: Optional[bool] = None,
         timeout: Optional[float] = None,
     ) -> "GNS3Config":
-        """Build config from explicit args with **local-config-file first** defaults.
+        """Build config from explicit inputs, environment, and local defaults.
 
         Resolution order for credentials (highest-precedence first):
           1. Explicit ``username`` / ``password`` kwargs.
@@ -135,18 +144,20 @@ class GNS3Config(BaseModel):
                 server_url = f"http://{local['host']}:{port}"
             else:
                 server_url = "http://localhost:3080"
-        # Credentials: explicit > env > local conf (only when auth=True).
-        if username is None and password is None:
-            env_u = os.environ.get("GNS3_USERNAME")
-            env_p = os.environ.get("GNS3_PASSWORD")
-            if env_u and env_p:
-                username, password = env_u, env_p
-            elif str(local.get("auth", "")).lower() == "true" and (local.get("user") or local.get("password")):
-                username, password = local.get("user"), local.get("password")
-            elif env_u:
-                username = env_u
-            elif env_p:
-                password = env_p
+        # Credentials: explicit > env > local config. Local config credentials
+        # never cross the loopback trust boundary into a remote connection.
+        env_u = os.environ.get("GNS3_USERNAME")
+        env_p = os.environ.get("GNS3_PASSWORD")
+        if username is None and env_u:
+            username = env_u
+        if password is None and env_p:
+            password = env_p
+        local_auth = (
+            _is_loopback_url(str(server_url))
+            and str(local.get("auth", "")).lower() == "true"
+        )
+        if username is None and password is None and local_auth:
+            username, password = local.get("user"), local.get("password")
         return cls(
             server_url=server_url,
             username=username,

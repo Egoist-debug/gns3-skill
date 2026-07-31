@@ -1,12 +1,12 @@
-"""gns3_run_guest_commands goal implementation."""
+"""Run-guest-commands goal implementation."""
 
 from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
 from gns3_skill import ssh_client as ssh_helpers
-from gns3_skill.gns3_client import GNS3APIClient, GNS3Config
-from gns3_skill.server_lifecycle import ensure_gns3_server, normalize_server_url
+from gns3_skill.gns3_client import GNS3APIClient
+from gns3_skill.runtime import OperationContext
 from gns3_skill.workflow.envelopes import (
     STATUS_SUCCESS,
     STEP_CHANGED,
@@ -23,6 +23,7 @@ from gns3_skill.workflow.runner import Step, run_steps
 
 async def run_guest_commands_goal(
     *,
+    context: OperationContext,
     commands: Optional[List[str]] = None,
     host: Optional[str] = None,
     port: int = 22,
@@ -35,12 +36,8 @@ async def run_guest_commands_goal(
     stop_on_error: bool = True,
     host_key_policy: str = "accept_new",
     connect_timeout: Optional[float] = None,
-    server_url: str = "http://localhost:3080",
-    username: Optional[str] = None,
-    password: Optional[str] = None,
 ) -> Dict[str, Any]:
     goal = "run_guest_commands"
-    url = normalize_server_url(server_url)
     commands = list(commands or [])
     if not commands:
         return error_envelope(goal, "commands list is required")
@@ -61,17 +58,14 @@ async def run_guest_commands_goal(
                 STEP_SKIPPED,
                 detail={"reason": "explicit host provided"},
             )
-        config = GNS3Config.from_env(server_url=url, username=username, password=password)
-        result = await ensure_gns3_server(
-            config.server_url, username=config.username, password=config.password
-        )
+        result = await context.ensure()
         if result.get("status") != "success":
             return step_entry(
                 "ensure_server",
                 STEP_FAILED,
                 error=result.get("error") or "GNS3 server not available",
             )
-        ctx["client"] = GNS3APIClient(config)
+        ctx["client"] = await context.client()
         return step_entry("ensure_server", STEP_SUCCESS)
 
     async def resolve_host_step() -> Dict[str, Any]:
@@ -102,6 +96,7 @@ async def run_guest_commands_goal(
             )
         except (ResolveMissing, ResolveAmbiguous, ValueError) as exc:
             return step_entry("resolve_host", STEP_FAILED, error=str(exc))
+        ctx["node"] = node
         started = False
         if node.get("status") != "started":
             try:
